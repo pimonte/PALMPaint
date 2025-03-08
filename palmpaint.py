@@ -169,7 +169,7 @@ class PaintApplication(framework.Framework):
                 self.update_canvas(row, col)
         
     def save_netcdf(self):
-        Save(self.pixels, self.res)
+        Save(self.pixels, self.original_res)
         
     def load_project_netcdf(self):
         """
@@ -323,7 +323,17 @@ class PaintApplication(framework.Framework):
     def __init__(self, root,  nx=16, ny=16, res=4):
         self.nx = nx
         self.ny = ny
+        self.original_res = res
         self.res = res
+        
+        # Get screen dimensions
+        # screen_width = root.winfo_screenwidth()
+        # screen_height = root.winfo_screenheight()
+        # print(screen_width, screen_height)
+        # desired_width = int(screen_width * 0.8)
+        # desired_height = int(screen_height * 0.8)
+        # computed_display_res = int(min(desired_width / nx, desired_height / ny))
+        # self.res = computed_display_res
         super().__init__(root)
         self.create_gui()
         self.draw_grid(self.nx, self.ny, self.res)
