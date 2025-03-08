@@ -27,6 +27,7 @@ import tkinter.filedialog as fd
 import framework
 from create_sd import Save
 from load_sd import Load
+import welcome_screen
 
 
 
@@ -37,9 +38,6 @@ class PaintApplication(framework.Framework):
     start_y = 0
     end_x = 0
     end_y = 0
-    nx = 16 
-    ny = 16
-    res = 4
     current_item = None
     brush_size = 1
     
@@ -322,11 +320,15 @@ class PaintApplication(framework.Framework):
     def function_not_defined(self):
         pass
     
-    def __init__(self, root):
+    def __init__(self, root,  nx=16, ny=16, res=4):
+        self.nx = nx
+        self.ny = ny
+        self.res = res
         super().__init__(root)
         self.create_gui()
         self.draw_grid(self.nx, self.ny, self.res)
         self.bind_mouse()
+        self.bind_shortcuts()
         
     # ------------------ Initialize Grid ------------------    
 
@@ -377,7 +379,6 @@ class PaintApplication(framework.Framework):
         self.create_drawing_canvas()
         self.create_current_coordinate_label()
         self.create_menu()
-        self.bind_shortcuts()
         self.create_brush_size_slider()
         
         
@@ -553,7 +554,11 @@ class PaintApplication(framework.Framework):
         
         
 if __name__ == '__main__':
+    # Ask the user for grid settings at startup
     root = tk.Tk()
+    root.withdraw()
+    nx, ny, res = welcome_screen.get_welcome_input(root)
+    root.deiconify()
     root.title("PALMPaint")
-    app = PaintApplication(root)
+    app = PaintApplication(root, nx, ny, res)
     root.mainloop()
