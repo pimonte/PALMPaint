@@ -1,12 +1,39 @@
+"""
+Paint Application is a Tkinter-based pixel painting program for creating
+simple SDs for PALM.
+
+    Copyright (C) 2025  Pierre Monteyne
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
+
+import math
 import tkinter as tk
+
 import framework
 from create_sd import Save
-import math
+
+
+
 
 class PaintApplication(framework.Framework):
     
-    start_x, start_y = 0, 0
-    end_x, end_y = 0, 0
+    start_x = 0
+    start_y = 0
+    end_x = 0
+    end_y = 0
     nx = 16 
     ny = 16
     res = 4
@@ -55,19 +82,26 @@ class PaintApplication(framework.Framework):
         return affected_pixels
     
     def update_canvas(self, y, x):
-        self.canvas.itemconfig(self.pixels[(y, x)]["id"], fill=self.pixels[(y, x)]["color"])
+        """Update the canvas for a specific pixel."""
+        self.canvas.itemconfig(self.pixels[(y, x)]["id"], 
+                               fill=self.pixels[(y, x)]["color"])
 
     def update_pixel(self, row, col, **kwargs):
+        """Update pixel attributes."""
         for key, value in kwargs.items():
             self.pixels[(row, col)][key] = value
             
     def vegetation(self):
+        """Apply vegetation tool to affected pixels."""
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
-        
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
-                self.update_pixel(row, col, pavement_type=-127, vegetation_type=3, soil_type=1, color="green")
+                self.update_pixel(row, col, 
+                                  pavement_type=-127, 
+                                  vegetation_type=3, 
+                                  soil_type=1, 
+                                  color="green")
                 self.update_canvas(row, col)
         
         # row, col = self.get_pixel_position()
@@ -82,7 +116,11 @@ class PaintApplication(framework.Framework):
         
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
-                self.update_pixel(row, col, pavement_type=1, soil_type=1, vegetation_type=-127, color="grey")
+                self.update_pixel(row, col, 
+                                  pavement_type=1, 
+                                  soil_type=1, 
+                                  vegetation_type=-127, 
+                                  color="grey")
                 self.update_canvas(row, col)
         
     def soil(self):
@@ -91,7 +129,9 @@ class PaintApplication(framework.Framework):
         
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
-                self.update_pixel(row, col, soil_type=1, color="brown")
+                self.update_pixel(row, col, 
+                                  soil_type=1, 
+                                  color="brown")
                 self.update_canvas(row, col)
         
     def water(self):
@@ -100,7 +140,12 @@ class PaintApplication(framework.Framework):
         
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
-                self.update_pixel(row, col, water_type=1, pavement_type=-127, vegetation_type=-127, soil_type=-127, color="blue")
+                self.update_pixel(row, col, 
+                                  water_type=1, 
+                                  pavement_type=-127, 
+                                  vegetation_type=-127, 
+                                  soil_type=-127, 
+                                  color="blue")
                 self.update_canvas(row, col)
         
     def building(self):
@@ -110,21 +155,22 @@ class PaintApplication(framework.Framework):
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
                 self.update_pixel(row, col, 
-                                  building_id=self.building_id, building_height=self.building_height, building_type=self.building_type,
-                                  pavement_type=-127, vegetation_type=-127, soil_type=-127, water_type=-127, 
+                                  building_id=self.building_id, 
+                                  building_height=self.building_height, 
+                                  building_type=self.building_type,
+                                  pavement_type=-127, 
+                                  vegetation_type=-127, 
+                                  soil_type=-127, 
+                                  water_type=-127, 
                                   color="black")
                 self.update_canvas(row, col)
         
-    def Save_NetCDF(self):
+    def save_netcdf(self):
         Save(self.pixels, self.res)
-        
-
-        
     
     def function_not_defined(self):
         pass
     
-       
     def __init__(self, root):
         super().__init__(root)
         self.create_gui()
@@ -133,13 +179,14 @@ class PaintApplication(framework.Framework):
         
     # ------------------ Initialize Grid ------------------    
     def draw_grid(self, nx, ny, res):
-        # Create a grid of pixels and store their IDs in a dictionary
+        """Create a grid of pixels and store their IDs in a dictionary"""
         self.pixels = {}
         for row in range(ny):
             for col in range(nx):
-                x1, y1 = col*res, row*res
+                x1, y1 = col * res, row * res
                 x2, y2 = x1 + res, y1 + res
-                rect = self.canvas.create_rectangle(x1, y1, x2, y2, fill="brown", outline="gray")
+                rect = self.canvas.create_rectangle(x1, y1, x2, y2, 
+                                                    fill="brown", outline="gray")
                 #print(rect)
                 # Store the pixel data in a dictionary
                 self.pixels[(row, col)] = {"id": rect,
@@ -155,12 +202,15 @@ class PaintApplication(framework.Framework):
         #print(self.pixels)
         
     def update_grid(self, nx, ny, res):
+        """Update the grid after changes in resolution."""
         #self.canvas.delete("all")
         for row in range(ny):
             for col in range(nx):
                 x1, y1 = col*res, row*res
                 x2, y2 = x1 + res, y1 + res
-                rect = self.canvas.create_rectangle(x1, y1, x2, y2, fill=self.pixels[(row, col)]["color"], outline=self.pixels[(row, col)]["outline"])
+                rect = self.canvas.create_rectangle(x1, y1, x2, y2, 
+                                                    fill=self.pixels[(row, col)]["color"], 
+                                                    outline=self.pixels[(row, col)]["outline"])
                 self.pixels[(row, col)]["id"] = rect
                 
                 
@@ -179,13 +229,16 @@ class PaintApplication(framework.Framework):
         
         
     def create_brush_size_slider(self):
+        """Create a slider to adjust the brush size."""
         self.brush_size_slider = tk.Scale(self.tool_bar, from_=1, to=10,
                                           resolution=2, orient="horizontal", label="Brush Pixel diameter")
         self.brush_size_slider.set(self.brush_size)
-        self.brush_size_slider.grid(row=15, column=1, columnspan=2, pady=5, padx=1, sticky='w')
+        self.brush_size_slider.grid(row=15, column=1, columnspan=2, 
+                                    pady=5, padx=1, sticky='w')
         self.brush_size_slider.bind("<Motion>", self.update_brush_size)
 
     def update_brush_size(self, event=None):
+        """Update the brush size from the slider."""
         self.brush_size = self.brush_size_slider.get()
 
             
@@ -208,7 +261,8 @@ class PaintApplication(framework.Framework):
         for index, name in enumerate(self.tool_bar_functions):
             button_text = name
             self.button = tk.Button(
-                self.tool_bar, text=button_text, command=lambda index=index: self.on_tool_bar_button_clicked(index))
+                self.tool_bar, text=button_text, 
+                command=lambda index=index: self.on_tool_bar_button_clicked(index))
             self.button.grid(
                 row=index // 2, column=1 + index % 2, sticky='nsew')
     
@@ -223,6 +277,7 @@ class PaintApplication(framework.Framework):
             child.destroy()
             
     def display_options_in_the_top_bar(self):
+        """Display options for the selected tool in the top bar."""
         self.show_selected_tool_icon_in_top_bar(
             self.selected_tool_bar_function)
         options_function_name = "{}_options".format(self.selected_tool_bar_function)
@@ -233,10 +288,11 @@ class PaintApplication(framework.Framework):
         self.current_coordinate_label = tk.Label(
             self.tool_bar, text='x:0\ny: 0 ')
         self.current_coordinate_label.grid(
-            row=13, column=1, columnspan=2, pady=5, padx=1, sticky='w')
+            row=13, column=1, columnspan=2, 
+            pady=5, padx=1, sticky='w')
 
     def show_current_coordinates(self, event=None):
-        
+        """Update the current coordinate label based on mouse movement."""
         x_coordinate = self.canvas.canvasx(event.x) // self.res
         y_coordinate = self.canvas.canvasx(event.y) // self.res
         coordinate_string = "x:{0}\ny:{1}".format(x_coordinate, y_coordinate)
@@ -246,7 +302,8 @@ class PaintApplication(framework.Framework):
         self.canvas_frame = tk.Frame(self.root, width=self.nx * self.res, height=self.ny * self.res)
         self.canvas_frame.pack(side="right", expand="yes", fill="both")
         self.canvas = tk.Canvas(self.canvas_frame, background="white",
-                                width=self.nx*self.res, height=self.ny*self.res, scrollregion=(0, 0, self.nx * self.res, self.ny * self.res))
+                                width=self.nx*self.res, height=self.ny*self.res, 
+                                scrollregion=(0, 0, self.nx * self.res, self.ny * self.res))
         self.create_scroll_bar()
         self.canvas.pack(side=tk.RIGHT, expand=tk.YES, fill=tk.BOTH)
 
@@ -290,7 +347,7 @@ class PaintApplication(framework.Framework):
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         menu_definitions = (
-            'File - Save//self.Save_NetCDF, Exit//self.root.quit',
+            'File - Save//self.save_netcdf, Exit//self.root.quit',
             'View- Zoom in//self.canvas_zoom_in,Zoom Out//self.canvas_zoom_out',
         )
         self.build_menu(menu_definitions)
@@ -311,6 +368,7 @@ class PaintApplication(framework.Framework):
         self.update_grid(self.nx, self.ny, self.res)
         
     def building_options(self):
+        """Display options for the building tool."""
         initial_id = tk.IntVar(value=1)  # initial value
         initial_height = tk.IntVar(value=10.0)  # initial value
         initial_type = tk.IntVar(value=2)
