@@ -18,12 +18,15 @@ simple SDs for PALM.
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-
+import json
 import math
+import os
 import tkinter as tk
+import tkinter.filedialog as fd
 
 import framework
 from create_sd import Save
+from load_sd import Load
 
 
 
@@ -48,6 +51,8 @@ class PaintApplication(framework.Framework):
     tool_bar_functions = (
         "vegetation", "pavement", "soil", "water", "building")
     selected_tool_bar_function = tool_bar_functions[0]
+    
+    
     
     def execute_selected_method(self):
         self.current_item = None
@@ -167,6 +172,152 @@ class PaintApplication(framework.Framework):
         
     def save_netcdf(self):
         Save(self.pixels, self.res)
+        
+    def load_project_netcdf(self):
+        """
+        Open a file dialog to let the user choose a NetCDF project file,
+        then load it using load_sd.Load() and update the canvas.
+        """
+        file_path = fd.askopenfilename(
+            defaultextension=".nc",
+            filetypes=[("NetCDF files", "*.nc"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return  # User cancelled
+
+        try:
+            grid, nx, ny, res = Load(file_path)
+        except Exception as e:
+            print(f"Error loading NetCDF file: {e}")
+            return
+
+        # Update grid parameters and replace the current grid
+        self.pixels = grid
+        self.nx = nx
+        self.ny = ny
+        self.res = res
+        
+        
+
+        # Redraw the grid to reflect the loaded data
+        self.update_grid(self.nx, self.ny, self.res)
+        print(f"Loaded NetCDF project from {file_path}")    
+        
+        
+    def save_project(self, filename="quicksave.json"):
+        """
+        Save the current grid state to a JSON file.
+        Non-serializable properties (like canvas IDs) are excluded.
+        """
+        data = {
+            "nx": self.nx,
+            "ny": self.ny,
+            "res": self.res,
+            "pixels": {}
+        }
+        for (row, col), pixel in self.pixels.items():
+            # Create a serializable pixel dictionary, excluding the canvas "id"
+            pixel_data = {k: v for k, v in pixel.items() if k != "id"}
+            # Use a string key for JSON (e.g., "row,col")
+            key = f"{row},{col}"
+            data["pixels"][key] = pixel_data
+
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"Project saved to {os.path.abspath(filename)}")
+
+    def load_project(self, filename="quicksave.json"):
+        """
+        Load the grid state from a JSON file and update the view.
+        The grid is redrawn based on the loaded data.
+        """
+        try:
+            with open(filename, "r") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            print("No saved project found!")
+            return
+
+        self.nx = data.get("nx", self.nx)
+        print(self.nx)
+        self.ny = data.get("ny", self.ny)
+        print(self.ny)
+        self.res = data.get("res", self.res)
+        print(self.res)
+
+        # Update each pixel; we assume the grid is already created
+        for key, pixel_data in data["pixels"].items():
+            row, col = map(int, key.split(","))
+            if (row, col) in self.pixels:
+                # Update existing pixel (except canvas id)
+                self.pixels[(row, col)].update(pixel_data)
+            else:
+                # If grid dimensions changed, add the pixel
+                self.pixels[(row, col)] = pixel_data
+
+        # Redraw the grid to reflect loaded state
+        self.update_grid(self.nx, self.ny, self.res)
+        print(f"Project loaded from {os.path.abspath(filename)}")
+        
+    def save_as_project(self):
+        """
+        Save the current grid state to a JSON file using a file save dialog.
+        """
+        file_path = fd.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return  # User cancelled the dialog
+
+        data = {
+            "nx": self.nx,
+            "ny": self.ny,
+            "res": self.res,
+            "pixels": {}
+        }
+        for (row, col), pixel in self.pixels.items():
+            # Exclude non-serializable items like canvas "id"
+            pixel_data = {k: v for k, v in pixel.items() if k != "id"}
+            key = f"{row},{col}"
+            data["pixels"][key] = pixel_data
+
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"Project saved to {os.path.abspath(file_path)}")
+
+    def load_from_json(self):
+        """
+        Load the grid state from a JSON file chosen by the user.
+        """
+        file_path = fd.askopenfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return  # User cancelled the dialog
+
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Error loading file: {e}")
+            return
+
+        self.nx = data.get("nx", self.nx)
+        self.ny = data.get("ny", self.ny)
+        self.res = data.get("res", self.res)
+
+        # Update pixels with loaded data
+        for key, pixel_data in data["pixels"].items():
+            row, col = map(int, key.split(","))
+            if (row, col) in self.pixels:
+                self.pixels[(row, col)].update(pixel_data)
+            else:
+                self.pixels[(row, col)] = pixel_data
+
+        self.update_grid(self.nx, self.ny, self.res)  # Redraw the grid to reflect the loaded state
+        print(f"Project loaded from {os.path.abspath(file_path)}")
     
     def function_not_defined(self):
         pass
@@ -178,6 +329,7 @@ class PaintApplication(framework.Framework):
         self.bind_mouse()
         
     # ------------------ Initialize Grid ------------------    
+
     def draw_grid(self, nx, ny, res):
         """Create a grid of pixels and store their IDs in a dictionary"""
         self.pixels = {}
@@ -225,6 +377,7 @@ class PaintApplication(framework.Framework):
         self.create_drawing_canvas()
         self.create_current_coordinate_label()
         self.create_menu()
+        self.bind_shortcuts()
         self.create_brush_size_slider()
         
         
@@ -347,12 +500,16 @@ class PaintApplication(framework.Framework):
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         menu_definitions = (
-            'File - Save//self.save_netcdf, Exit//self.root.quit',
-            'View- Zoom in//self.canvas_zoom_in,Zoom Out//self.canvas_zoom_out',
+            'File - Save to NetCDF//self.save_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
+            'Load from NetCDF//self.load_project_netcdf, Load Project//self.load_project, Load Project from JSON//self.load_from_json, sep, Exit//self.root.quit',
+            'View- Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out',
         )
         self.build_menu(menu_definitions)
-
-    def canvas_zoom_in(self):
+    def bind_shortcuts(self):
+        self.root.bind("<Control-Up>", self.canvas_zoom_in)
+        self.root.bind("<Control-Down>", self.canvas_zoom_out)
+        
+    def canvas_zoom_in(self, event=None):
         self.canvas.scale("all", 0, 0, 1.2, 1.2)
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
         # update coordinates in dictionary
@@ -360,7 +517,7 @@ class PaintApplication(framework.Framework):
         self.update_grid(self.nx, self.ny, self.res)
         
 
-    def canvas_zoom_out(self):
+    def canvas_zoom_out(self, event=None):
         self.canvas.scale("all", 0, 0, .8, .8)
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
         # update coordinates in dictionary
