@@ -208,7 +208,8 @@ class PaintApplication(framework.Framework):
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
             return
-
+        
+        self.canvas.delete("all")
         # Update grid parameters and replace the current grid
         self.pixels = grid
         self.nx = nx
@@ -230,7 +231,7 @@ class PaintApplication(framework.Framework):
         data = {
             "nx": self.nx,
             "ny": self.ny,
-            "res": self.res,
+            "res": self.original_res,
             "pixels": {}
         }
         for (row, col), pixel in self.pixels.items():
@@ -255,7 +256,8 @@ class PaintApplication(framework.Framework):
         except FileNotFoundError:
             print("No saved project found!")
             return
-
+        
+        self.canvas.delete("all")
         self.nx = data.get("nx", self.nx)
         print(self.nx)
         self.ny = data.get("ny", self.ny)
@@ -291,7 +293,7 @@ class PaintApplication(framework.Framework):
         data = {
             "nx": self.nx,
             "ny": self.ny,
-            "res": self.res,
+            "res": self.original_res,
             "pixels": {}
         }
         for (row, col), pixel in self.pixels.items():
@@ -321,7 +323,8 @@ class PaintApplication(framework.Framework):
         except Exception as e:
             print(f"Error loading file: {e}")
             return
-
+        
+        self.canvas.delete("all")
         self.nx = data.get("nx", self.nx)
         self.ny = data.get("ny", self.ny)
         self.res = data.get("res", self.res)
