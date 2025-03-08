@@ -167,6 +167,26 @@ class PaintApplication(framework.Framework):
                                   water_type=-127, 
                                   color="black")
                 self.update_canvas(row, col)
+                
+ # ------------------ File Menu Operations ------------------
+    
+    def new_project(self):
+        if not self.confirm_action("New Project", "Are you sure you want to start a new project? Unsaved work will be lost."):
+         return
+
+        self.canvas.delete("all")
+        
+        new_nx, new_ny, new_res = welcome_screen.get_welcome_input(self.root)
+        self.nx = new_nx
+        self.ny = new_ny
+        self.original_res = new_res
+        self.res = new_res 
+
+        self.draw_grid(self.nx, self.ny, self.res)
+        
+    def confirm_action(self, title, message):
+        return tk.messagebox.askyesno(title, message)
+        
         
     def save_netcdf(self):
         Save(self.pixels, self.original_res)
@@ -511,7 +531,7 @@ class PaintApplication(framework.Framework):
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         menu_definitions = (
-            'File - Save to NetCDF//self.save_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
+            'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
             'Load from NetCDF//self.load_project_netcdf, Load Project//self.load_project, Load Project from JSON//self.load_from_json, sep, Exit//self.root.quit',
             'View- Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out',
         )
