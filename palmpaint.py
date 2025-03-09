@@ -103,7 +103,10 @@ class PaintApplication(framework.Framework):
                 self.update_pixel(row, col, 
                                   pavement_type=-127, 
                                   vegetation_type=3, 
-                                  soil_type=1, 
+                                  soil_type=1,
+                                  building_id=-127, 
+                                  building_height=-127,
+                                  building_type=-127, 
                                   color="green")
                 self.update_canvas(row, col)
         
@@ -122,7 +125,10 @@ class PaintApplication(framework.Framework):
                 self.update_pixel(row, col, 
                                   pavement_type=1, 
                                   soil_type=1, 
-                                  vegetation_type=-127, 
+                                  vegetation_type=-127,
+                                  building_id=-127, 
+                                  building_height=-127,
+                                  building_type=-127,
                                   color="grey")
                 self.update_canvas(row, col)
         
@@ -133,7 +139,12 @@ class PaintApplication(framework.Framework):
         for row, col in affected_pixels:
             if (row, col) in self.pixels:
                 self.update_pixel(row, col, 
-                                  soil_type=1, 
+                                  soil_type=1,
+                                  pavement_type=-127, 
+                                  vegetation_type=-127, 
+                                  building_id=-127, 
+                                  building_height=-127,
+                                  building_type=-127,  
                                   color="brown")
                 self.update_canvas(row, col)
         
@@ -147,7 +158,10 @@ class PaintApplication(framework.Framework):
                                   water_type=1, 
                                   pavement_type=-127, 
                                   vegetation_type=-127, 
-                                  soil_type=-127, 
+                                  soil_type=-127,
+                                  building_id=-127, 
+                                  building_height=-127,
+                                  building_type=-127, 
                                   color="blue")
                 self.update_canvas(row, col)
         
