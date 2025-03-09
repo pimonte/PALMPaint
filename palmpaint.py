@@ -103,7 +103,7 @@ class PaintApplication(framework.Framework):
                 self.update_pixel(row, col, 
                                   pavement_type=-127, 
                                   vegetation_type=3, 
-                                  soil_type=1,
+                                  soil_type=3,
                                   building_id=-127, 
                                   building_height=-127,
                                   building_type=-127, 
@@ -141,7 +141,7 @@ class PaintApplication(framework.Framework):
                 self.update_pixel(row, col, 
                                   soil_type=1,
                                   pavement_type=-127, 
-                                  vegetation_type=-127, 
+                                  vegetation_type=1, 
                                   building_id=-127, 
                                   building_height=-127,
                                   building_type=-127,  
@@ -391,7 +391,7 @@ class PaintApplication(framework.Framework):
                 #print(rect)
                 # Store the pixel data in a dictionary
                 self.pixels[(row, col)] = {"id": rect,
-                                           "vegetation_type": -127,
+                                           "vegetation_type": 1,
                                            "pavement_type": -127,
                                            "water_type": -127,
                                            "building_id": -127,

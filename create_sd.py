@@ -25,6 +25,7 @@ def Save(data, res):
         height_data = np.full((ny, nx), -1)
         
         for (row, col), metadata in data.items():
+            #print(metadata)
             if "zt" in metadata and metadata["zt"] is not None:
                 height_data[row, col] = metadata["zt"]
             if "vegetation_type" in metadata and metadata["vegetation_type"] is not None:
@@ -53,11 +54,14 @@ def Save(data, res):
         height_data = np.flipud(height_data)
         
                 
-        print("VEGETATION", vegetation_data)
+        #print("VEGETATION", vegetation_data)
                 
         print("SAVE NETCDF")
         filename = "output.nc"
         print(f"Saving to {filename}...")
+        
+
+
         with (Dataset(filename, 'w', format='NETCDF4') as nc_file):
 
             # Define dimensions
@@ -69,8 +73,6 @@ def Save(data, res):
             nc_zt.long_name = 'terrain height'
             nc_zt.units = 'm'
             nc_zt[:, :] = nc_zt._FillValue
-            
-
             
             nc_vegetation_type = nc_file.createVariable(
                 'vegetation_type', 'i1', ('y', 'x'), fill_value=-127)
@@ -97,24 +99,7 @@ def Save(data, res):
             nc_water_type.units = "1"
             nc_water_type[:, :] = nc_water_type._FillValue
             
-            nc_building_id = nc_file.createVariable(
-                'building_id', 'i1', ('y', 'x'), fill_value=-127)
-            nc_building_id.long_name = "building ID"
-            nc_building_id.units = "1"
-            nc_building_id[:, :] = nc_building_id._FillValue
-            
-            nc_buildings_2d = nc_file.createVariable(
-            'buildings_2d', 'f4', ('y', 'x'), fill_value=-9999.0)
-            nc_buildings_2d.long_name = "building height"
-            nc_buildings_2d.units = "m"
-            nc_buildings_2d.lod = np.int32(1)
-            nc_buildings_2d[:, :] = nc_buildings_2d._FillValue
-            
-            nc_building_type = nc_file.createVariable(
-            'building_type', 'i1', ('y', 'x'), fill_value=-127)
-            nc_building_type.long_name = "building type classification"
-            nc_building_type.units = "1"
-            nc_building_type[:, :] = nc_building_type._FillValue
+
             
                         # Coordinates
         # -----------
@@ -135,6 +120,8 @@ def Save(data, res):
             
             
             # Where data is > fill_value, set the data in the NetCDF file
+            nc_zt[:,:]= 0.0
+            
             nc_vegetation_type[:, :] = nc_vegetation_type._FillValue
             nc_vegetation_type[:, :] = np.where(
             vegetation_data[:, :] > -1,
@@ -143,8 +130,8 @@ def Save(data, res):
             
             nc_soil_type[:, :] = nc_soil_type._FillValue
             nc_soil_type[:, :] = np.where(
-            soil_data[:, :] == 1,
-            1,
+            soil_data[:, :] > -1,
+            soil_data[:, :],
             nc_soil_type._FillValue)
             
             nc_pavement_type[:, :] = nc_pavement_type._FillValue
@@ -159,28 +146,59 @@ def Save(data, res):
             water_data[:, :],
             nc_water_type._FillValue)
             
-            nc_building_id[:, :] = nc_building_id._FillValue
-            nc_building_id[:, :] = np.where(
-            building_id_data[:, :] > -1,
-            building_id_data[:, :],
-            nc_building_id._FillValue)
             
-            nc_buildings_2d[:, :] = nc_buildings_2d._FillValue
-            nc_buildings_2d[:, :] = np.where(
-            building_height_data[:, :] > -1,
-            building_height_data[:, :],
-            nc_buildings_2d._FillValue)
-            
-            nc_building_type[:, :] = nc_building_type._FillValue
-            nc_building_type[:, :] = np.where(
-            building_type_data[:, :] > -1,
-            building_type_data[:, :],
-            nc_building_type._FillValue)
+            # Buildings
+            if np.any(building_id_data > -1):
+                print("BUILDINGS detected (switch on USM Namelist in PALM)")
+                
+                nc_building_id = nc_file.createVariable(
+                'building_id', 'i1', ('y', 'x'), fill_value=-127)
+                nc_building_id.long_name = "building ID"
+                nc_building_id.units = "1"
+                nc_building_id[:, :] = nc_building_id._FillValue
+                
+                nc_buildings_2d = nc_file.createVariable(
+                'buildings_2d', 'f4', ('y', 'x'), fill_value=-9999.0)
+                nc_buildings_2d.long_name = "building height"
+                nc_buildings_2d.units = "m"
+                nc_buildings_2d.lod = np.int32(1)
+                nc_buildings_2d[:, :] = nc_buildings_2d._FillValue
+                
+                nc_building_type = nc_file.createVariable(
+                'building_type', 'i1', ('y', 'x'), fill_value=-127)
+                nc_building_type.long_name = "building type classification"
+                nc_building_type.units = "1"
+                nc_building_type[:, :] = nc_building_type._FillValue
+                
+                nc_building_id[:, :] = nc_building_id._FillValue
+                nc_building_id[:, :] = np.where(
+                building_id_data[:, :] > -1,
+                building_id_data[:, :],
+                nc_building_id._FillValue)
+                
+                nc_buildings_2d[:, :] = nc_buildings_2d._FillValue
+                nc_buildings_2d[:, :] = np.where(
+                building_height_data[:, :] > -1,
+                building_height_data[:, :],
+                nc_buildings_2d._FillValue)
+                
+                nc_building_type[:, :] = nc_building_type._FillValue
+                nc_building_type[:, :] = np.where(
+                building_type_data[:, :] > -1,
+                building_type_data[:, :],
+                nc_building_type._FillValue)
             
 
     
             # Add metadata
             nc_file.title = 'Idealized Scenario'
             nc_file.author = 'Your Name'
+            
+            nc_file.origin_lat = 52.50965  # (overwrite initialization_parameters)
+            nc_file.origin_lon = 13.3139
+            nc_file.origin_x = 3455249.0
+            nc_file.origin_y = 5424815.0
+            nc_file.origin_z = 0.0
+            nc_file.rotation_angle = 0.0 
 
         print(f"NetCDF file saved: {filename}")
