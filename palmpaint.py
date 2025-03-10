@@ -25,10 +25,10 @@ import os
 import tkinter as tk
 import tkinter.filedialog as fd
 
-import framework
-from create_sd import Save
-from load_sd import Load
-import welcome_screen
+import base.framework as framework
+from base.create_sd import Save
+from base.load_sd import Load
+import base.welcome_screen as welcome_screen
 
 
 
