@@ -109,17 +109,67 @@ class PaintApplication(framework.Framework):
                                   building_type=-127, 
                                   color="green")
                 self.update_canvas(row, col)
-                
+
     def bucket_fill(self):
-        tool_function = getattr(self, self.selected_tool_bar_function, None)
-        if tool_function:
-            for (row, col) in self.pixels:
-                center_row, center_col = row, col
-                affected_pixels = self.get_pixels_in_brush(center_row, center_col)
-                for row, col in affected_pixels:
-                    if (row, col) in self.pixels:
-                        tool_function()
-        
+        if self.selected_tool_bar_function == "vegetation":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col,
+                                pavement_type=-127,
+                                vegetation_type=3,
+                                soil_type=3,
+                                building_id=-127,
+                                building_height=-127,
+                                building_type=-127,
+                                color="green")
+                self.update_canvas(row, col)
+        elif self.selected_tool_bar_function == "pavement":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col,
+                                pavement_type=1,
+                                vegetation_type=-127,
+                                soil_type=1,
+                                building_id=-127,
+                                building_height=-127,
+                                building_type=-127,
+                                color="grey")
+                self.update_canvas(row, col)
+        elif self.selected_tool_bar_function == "soil":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col,
+                                pavement_type=-127,
+                                vegetation_type=1,
+                                soil_type=1,
+                                building_id=-127,
+                                building_height=-127,
+                                building_type=-127,
+                                color="brown")
+                self.update_canvas(row, col)
+        elif self.selected_tool_bar_function == "water":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col,
+                                water_type=1,
+                                pavement_type=-127,
+                                vegetation_type=-127,
+                                soil_type=-127,
+                                building_id=-127,
+                                building_height=-127,
+                                building_type=-127,
+                                color="blue")
+                self.update_canvas(row, col)
+        elif self.selected_tool_bar_function == "building":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col,
+                                building_id=self.building_id,
+                                building_height=self.building_height,
+                                building_type=self.building_type,
+                                pavement_type=-127,
+                                vegetation_type=-127,
+                                soil_type=-127,
+                                water_type=-127,
+                                color="black")
+                self.update_canvas(row, col)
+                
+                
         # row, col = self.get_pixel_position()
         
         # if (row, col) in self.pixels:
