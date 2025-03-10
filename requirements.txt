@@ -1,0 +1,4 @@
+certifi==2025.1.31
+cftime==1.6.4.post1
+netCDF4==1.7.2
+numpy==2.2.3
