@@ -529,6 +529,7 @@ class PaintApplication(framework.Framework):
         
         self.create_drawing_canvas()
         self.create_current_coordinate_label()
+        self.create_meter_coordinate_label()
         self.create_menu()
         self.create_brush_size_slider()
         
@@ -591,17 +592,37 @@ class PaintApplication(framework.Framework):
           
     def create_current_coordinate_label(self):
         self.current_coordinate_label = tk.Label(
-            self.tool_bar, text='x:0\ny: 0 ')
+            self.tool_bar, text='nx:0\nny: 0 ')
         self.current_coordinate_label.grid(
-            row=13, column=1, columnspan=2, 
+            row=18, column=1, columnspan=2, 
             pady=5, padx=1, sticky='w')
 
     def show_current_coordinates(self, event=None):
         """Update the current coordinate label based on mouse movement."""
         x_coordinate = self.canvas.canvasx(event.x) // self.res
         y_coordinate = self.canvas.canvasx(event.y) // self.res
-        coordinate_string = "x:{0}\ny:{1}".format(x_coordinate, y_coordinate)
+        coordinate_string = "nx:{0}\nny:{1}".format(x_coordinate, y_coordinate)
         self.current_coordinate_label.config(text=coordinate_string)
+        
+    def create_meter_coordinate_label(self):
+        # Create a second label for meter coordinates and position it below the grid coordinate label
+        self.meter_coordinate_label = tk.Label(self.tool_bar, text='x:0\ny:0')
+        self.meter_coordinate_label.grid(row=20, column=1, columnspan=2, pady=5, padx=1, sticky='w')
+
+    def show_meter_coordinates(self, event=None):
+        """Update the meter coordinate label based on mouse movement."""
+        # Get grid indices as before
+        grid_x = self.canvas.canvasx(event.x) // self.res
+        grid_y = self.canvas.canvasy(event.y) // self.res
+        
+        # Conversion factor: adjust this factor if each grid cell is not 1 meter.
+        #conversion_factor = self.original_res / 2
+        
+        meter_x = (grid_x + 0.5) * self.original_res
+        meter_y = (grid_y + 0.5) * self.original_res
+
+        coordinate_string = "x:{:.2f}\ny:{:.2f}".format(meter_x, meter_y)
+        self.meter_coordinate_label.config(text=coordinate_string)
         
     def create_drawing_canvas(self):
         self.canvas_frame = tk.Frame(self.root, width=self.nx * self.res, height=self.ny * self.res)
@@ -646,6 +667,7 @@ class PaintApplication(framework.Framework):
 
     def on_mouse_unpressed_motion(self, event):
         self.show_current_coordinates(event)
+        self.show_meter_coordinates(event)
         
 
 # ------------------ Extras ------------------

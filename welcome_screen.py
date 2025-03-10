@@ -86,7 +86,7 @@ class WelcomeForm(tk.Toplevel):
         except ValueError:
             ny = self.default_ny
         try:
-            res = int(self.res_entry.get()) if self.res_entry.get() != "" else self.default_res
+            res = float(self.res_entry.get()) if self.res_entry.get() != "" else self.default_res
         except ValueError:
             res = self.default_res
 
