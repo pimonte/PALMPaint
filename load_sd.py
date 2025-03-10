@@ -3,11 +3,6 @@ Module to load grid data from a NetCDF file.
 This file is meant to be used with the PALMPaint application.
 """
 
-"""
-Module to load grid data from a NetCDF file.
-This file is meant to be used with the PALMPaint application.
-"""
-
 from netCDF4 import Dataset
 import numpy as np
 
@@ -66,11 +61,16 @@ def Load(filename="output.nc"):
     res = (x[1] - x[0]) if nx > 1 else 1
     
     def get_data(var_name):
-        var = nc_file.variables[var_name][:]
+        # Check if the variable exists in the NetCDF file
+        if var_name in nc_file.variables:
+            var = nc_file.variables[var_name][:]
         # If var is a masked array, fill the masked elements with the _FillValue.
-        if hasattr(var, "filled"):
-            return var.filled(nc_file.variables[var_name]._FillValue)
-        return var
+            if hasattr(var, "filled"):
+                return var.filled(nc_file.variables[var_name]._FillValue)
+            return var
+        else:
+        # If the variable does not exist, return an array of fill values
+            return np.zeros((ny, nx)) -127
 
     # Read the saved variables
     veg = get_data("vegetation_type")

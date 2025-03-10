@@ -3,7 +3,7 @@ from netCDF4 import Dataset
 import numpy as np
 
 
-def Save(data, res):
+def Save(data, res, filename="quicksave"):
         #print("DATA", data)
         rows = [key[0] for key in data.keys()]  # Extract all row indices
         cols = [key[1] for key in data.keys()]  # Extract all column indices
@@ -57,7 +57,7 @@ def Save(data, res):
         #print("VEGETATION", vegetation_data)
                 
         print("SAVE NETCDF")
-        filename = "output.nc"
+        
         print(f"Saving to {filename}...")
         
 

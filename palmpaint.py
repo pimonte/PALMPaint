@@ -109,6 +109,16 @@ class PaintApplication(framework.Framework):
                                   building_type=-127, 
                                   color="green")
                 self.update_canvas(row, col)
+                
+    def bucket_fill(self):
+        tool_function = getattr(self, self.selected_tool_bar_function, None)
+        if tool_function:
+            for (row, col) in self.pixels:
+                center_row, center_col = row, col
+                affected_pixels = self.get_pixels_in_brush(center_row, center_col)
+                for row, col in affected_pixels:
+                    if (row, col) in self.pixels:
+                        tool_function()
         
         # row, col = self.get_pixel_position()
         
@@ -205,6 +215,15 @@ class PaintApplication(framework.Framework):
     def save_netcdf(self):
         Save(self.pixels, self.original_res)
         
+    def save_as_netcdf(self):
+        file_path = fd.asksaveasfilename(
+            defaultextension="",
+            filetypes=[("All files", "*"), ("NetCDF files", "*.nc") ]
+        )
+        if not file_path:
+            return
+        Save(self.pixels, self.original_res, file_path)
+        
     def load_project_netcdf(self):
         """
         Open a file dialog to let the user choose a NetCDF project file,
@@ -212,7 +231,7 @@ class PaintApplication(framework.Framework):
         """
         file_path = fd.askopenfilename(
             defaultextension=".nc",
-            filetypes=[("NetCDF files", "*.nc"), ("All files", "*.*")]
+            filetypes=[("NetCDF files", "*.nc"), ("All files", "*")]
         )
         if not file_path:
             return  # User cancelled
@@ -387,7 +406,7 @@ class PaintApplication(framework.Framework):
                 x1, y1 = col * res, row * res
                 x2, y2 = x1 + res, y1 + res
                 rect = self.canvas.create_rectangle(x1, y1, x2, y2, 
-                                                    fill="brown", outline="gray")
+                                                    fill="brown", outline="white")
                 #print(rect)
                 # Store the pixel data in a dictionary
                 self.pixels[(row, col)] = {"id": rect,
@@ -399,7 +418,7 @@ class PaintApplication(framework.Framework):
                                            "building_type": -127,
                                            "soil_type": 1,
                                            "color": "brown",
-                                           "outline": "gray",}
+                                           "outline": "white",}
         #print(self.pixels)
         
     def update_grid(self, nx, ny, res):
@@ -548,9 +567,10 @@ class PaintApplication(framework.Framework):
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         menu_definitions = (
-            'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
+            'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save NetCDF as ...//self.save_as_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
             'Load from NetCDF//self.load_project_netcdf, Load Project//self.load_project, Load Project from JSON//self.load_from_json, sep, Exit//self.root.quit',
             'View- Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out',
+            'Edit - Bucket Fill//self.bucket_fill',
         )
         self.build_menu(menu_definitions)
     def bind_shortcuts(self):
