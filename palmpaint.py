@@ -18,6 +18,7 @@ simple SDs for PALM.
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+import copy
 import json
 import math
 import os
@@ -96,6 +97,7 @@ class PaintApplication(framework.Framework):
             
     def vegetation(self):
         """Apply vegetation tool to affected pixels."""
+        
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         for row, col in affected_pixels:
@@ -111,6 +113,7 @@ class PaintApplication(framework.Framework):
                 self.update_canvas(row, col)
 
     def bucket_fill(self):
+        self.save_state()
         if self.selected_tool_bar_function == "vegetation":
             for (row, col) in self.pixels.keys():
                 self.update_pixel(row, col,
@@ -177,6 +180,7 @@ class PaintApplication(framework.Framework):
         #     self.update_canvas(row, col)
         
     def pavement(self):
+        
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         
@@ -193,6 +197,7 @@ class PaintApplication(framework.Framework):
                 self.update_canvas(row, col)
         
     def soil(self):
+        
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         
@@ -209,6 +214,7 @@ class PaintApplication(framework.Framework):
                 self.update_canvas(row, col)
         
     def water(self):
+        
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         
@@ -226,6 +232,7 @@ class PaintApplication(framework.Framework):
                 self.update_canvas(row, col)
         
     def building(self):
+        
         center_row, center_col = self.get_pixel_position()
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         
@@ -423,6 +430,32 @@ class PaintApplication(framework.Framework):
         self.update_grid(self.nx, self.ny, self.res)  # Redraw the grid to reflect the loaded state
         print(f"Project loaded from {os.path.abspath(file_path)}")
     
+    def save_state(self):
+        # Use deepcopy to make sure we capture the full state of the pixels
+        self.undo_stack.append(copy.deepcopy(self.pixels))
+        
+    def undo(self, event=None):
+        if self.undo_stack:
+            # Remove the current state and move it to the redo stack
+            state = self.undo_stack.pop()
+            self.redo_stack.append(copy.deepcopy(self.pixels))
+            # Restore the saved state
+            self.pixels = state
+            self.update_grid(self.nx, self.ny, self.res)
+        else:
+            print("Nothing to undo.")
+            
+    def redo(self, event=None):
+        if self.redo_stack:
+            state = self.redo_stack.pop()
+            # You might want to save the current state back to undo if needed
+            self.undo_stack.append(copy.deepcopy(self.pixels))
+            self.pixels = state
+            self.update_grid(self.nx, self.ny, self.res)
+        else:
+            print("Nothing to redo.")
+
+    
     def function_not_defined(self):
         pass
     
@@ -432,6 +465,8 @@ class PaintApplication(framework.Framework):
         self.original_res = res
         self.res = res
         
+        self.undo_stack = []
+        self.redo_stack = []
         # Get screen dimensions
         # screen_width = root.winfo_screenwidth()
         # screen_height = root.winfo_screenheight()
@@ -598,6 +633,7 @@ class PaintApplication(framework.Framework):
         self.canvas.bind("<Motion>", self.on_mouse_unpressed_motion)
 
     def on_mouse_button_pressed(self, event):
+        self.save_state()
         self.start_x = self.end_x = self.canvas.canvasx(event.x)
         self.start_y = self.end_y = self.canvas.canvasy(event.y)
         self.execute_selected_method()
@@ -620,12 +656,15 @@ class PaintApplication(framework.Framework):
             'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save NetCDF as ...//self.save_as_netcdf, Save Project//self.save_project, Save Project as ...//self.save_as_project, sep,'+
             'Load from NetCDF//self.load_project_netcdf, Load Project//self.load_project, Load Project from JSON//self.load_from_json, sep, Exit//self.root.quit',
             'View- Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out',
-            'Edit - Bucket Fill//self.bucket_fill',
+            'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
         )
         self.build_menu(menu_definitions)
     def bind_shortcuts(self):
         self.root.bind("<Control-Up>", self.canvas_zoom_in)
         self.root.bind("<Control-Down>", self.canvas_zoom_out)
+        self.root.bind("<Control-z>", self.undo)
+        self.root.bind("<Control-y>", self.redo)
+        
         
     def canvas_zoom_in(self, event=None):
         self.canvas.scale("all", 0, 0, 1.2, 1.2)
