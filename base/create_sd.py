@@ -3,7 +3,7 @@ from netCDF4 import Dataset
 import numpy as np
 
 
-def Save(data, res, filename="quicksave"):
+def Save(data, res, ori, filename="quicksave"):
         #print("DATA", data)
         rows = [key[0] for key in data.keys()]  # Extract all row indices
         cols = [key[1] for key in data.keys()]  # Extract all column indices
@@ -192,13 +192,13 @@ def Save(data, res, filename="quicksave"):
     
             # Add metadata
             nc_file.title = 'Idealized Scenario'
-            nc_file.author = 'Your Name'
+            nc_file.author = 'PALM User'
             
-            nc_file.origin_lat = 52.50965  # (overwrite initialization_parameters)
-            nc_file.origin_lon = 13.3139
-            nc_file.origin_x = 3455249.0
-            nc_file.origin_y = 5424815.0
+            nc_file.origin_lat = ori[0]  # (overwrite initialization_parameters)
+            nc_file.origin_lon = ori[1] 
+            nc_file.origin_x = ori[2] 
+            nc_file.origin_y = ori[3] 
             nc_file.origin_z = 0.0
-            nc_file.rotation_angle = 0.0 
+            nc_file.rotation_angle = 0.0
 
         print(f"NetCDF file saved: {filename}")

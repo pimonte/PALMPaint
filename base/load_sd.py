@@ -54,6 +54,8 @@ def Load(filename="output.nc"):
     # Get dimensions
     nx = len(nc_file.dimensions["x"])
     ny = len(nc_file.dimensions["y"])
+    ori = [nc_file.origin_lat, nc_file.origin_lon,
+           nc_file.origin_x, nc_file.origin_y]
 
     # Determine resolution from the x coordinate variable.
     # The x values are defined as: np.arange(0, nx*dx, dx) + 0.5*dx in create_sd.py
@@ -110,4 +112,4 @@ def Load(filename="output.nc"):
             
 
     nc_file.close()
-    return grid, nx, ny, res
+    return grid, nx, ny, res, ori

@@ -25,6 +25,7 @@ import os
 import tkinter as tk
 import tkinter.filedialog as fd
 
+import base.report as report
 import base.framework as framework
 from base.create_sd import Save
 from base.load_sd import Load
@@ -34,7 +35,7 @@ import base.welcome_screen as welcome_screen
 
 
 class PaintApplication(framework.Framework):
-    
+    origin = (52.50965, 13.3139, 3455249.0, 5424815.0) # lat, lon, projected x, projected y
     start_x = 0
     start_y = 0
     end_x = 0
@@ -46,6 +47,7 @@ class PaintApplication(framework.Framework):
     building_id = 1
     building_height = 10
     building_type = 2
+    
 
     tool_bar_functions = (
         "vegetation", "pavement", "soil", "water", "building")
@@ -270,7 +272,7 @@ class PaintApplication(framework.Framework):
         
         
     def save_netcdf(self):
-        Save(self.pixels, self.original_res)
+        Save(self.pixels, self.original_res, self.origin)
         
     def save_as_netcdf(self):
         file_path = fd.asksaveasfilename(
@@ -279,7 +281,7 @@ class PaintApplication(framework.Framework):
         )
         if not file_path:
             return
-        Save(self.pixels, self.original_res, file_path)
+        Save(self.pixels, self.original_res, self.origin, file_path)
         
     def load_project_netcdf(self):
         """
@@ -287,14 +289,14 @@ class PaintApplication(framework.Framework):
         then load it using load_sd.Load() and update the canvas.
         """
         file_path = fd.askopenfilename(
-            defaultextension=".nc",
-            filetypes=[("NetCDF files", "*.nc"), ("All files", "*")]
+            defaultextension="",
+            filetypes=[("All files", "*"), ("NetCDF files", "*.nc")]
         )
         if not file_path:
             return  # User cancelled
 
         try:
-            grid, nx, ny, res = Load(file_path)
+            grid, nx, ny, res, origin = Load(file_path)
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
             return
@@ -305,6 +307,7 @@ class PaintApplication(framework.Framework):
         self.nx = nx
         self.ny = ny
         self.res = res
+        self.origin = origin
         
         
 
@@ -468,13 +471,14 @@ class PaintApplication(framework.Framework):
         self.undo_stack = []
         self.redo_stack = []
         # Get screen dimensions
-        # screen_width = root.winfo_screenwidth()
-        # screen_height = root.winfo_screenheight()
-        # print(screen_width, screen_height)
-        # desired_width = int(screen_width * 0.8)
-        # desired_height = int(screen_height * 0.8)
-        # computed_display_res = int(min(desired_width / nx, desired_height / ny))
-        # self.res = computed_display_res
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        print(screen_width, screen_height)
+        desired_width = int(screen_width * 0.8)
+        desired_height = int(screen_height * 0.8)
+        computed_display_res = int(min(desired_width / nx, desired_height / ny))
+        self.res = computed_display_res
+        
         super().__init__(root)
         self.create_gui()
         self.draw_grid(self.nx, self.ny, self.res)
@@ -532,6 +536,7 @@ class PaintApplication(framework.Framework):
         self.create_meter_coordinate_label()
         self.create_menu()
         self.create_brush_size_slider()
+        self.create_gridwith_label()
         
         
     def create_brush_size_slider(self):
@@ -590,6 +595,19 @@ class PaintApplication(framework.Framework):
         func = getattr(self, options_function_name, self.function_not_defined)
         func()
           
+    def create_gridwith_label(self):
+        """Create a static label between the brush slider and the nx/ny labels."""
+        info_frame = tk.Frame(self.tool_bar, padx=5, pady=5)  # Frame with background
+        info_frame.grid(row=16, column=1, columnspan=2, pady=5, padx=1, sticky='w')
+
+        self.static_label = tk.Label(
+            info_frame, 
+            text=f"Grid width: {self.original_res} m", 
+            fg="black",       # Text color
+            justify="left"
+        )
+        self.static_label.pack()
+    
     def create_current_coordinate_label(self):
         self.current_coordinate_label = tk.Label(
             self.tool_bar, text='nx:0\nny: 0 ')
@@ -599,8 +617,8 @@ class PaintApplication(framework.Framework):
 
     def show_current_coordinates(self, event=None):
         """Update the current coordinate label based on mouse movement."""
-        x_coordinate = self.canvas.canvasx(event.x) // self.res
-        y_coordinate = self.canvas.canvasx(event.y) // self.res
+        x_coordinate = int(self.canvas.canvasx(event.x) // self.res)
+        y_coordinate = int(self.canvas.canvasx(event.y) // self.res)
         coordinate_string = "nx:{0}\nny:{1}".format(x_coordinate, y_coordinate)
         self.current_coordinate_label.config(text=coordinate_string)
         
@@ -679,6 +697,7 @@ class PaintApplication(framework.Framework):
             'Load from NetCDF//self.load_project_netcdf, Load Project//self.load_project, Load Project from JSON//self.load_from_json, sep, Exit//self.root.quit',
             'View- Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out',
             'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
+            'Extras - Generate Report//self.generate_report, Change Origin//self.change_origin',
         )
         self.build_menu(menu_definitions)
     def bind_shortcuts(self):
@@ -726,9 +745,61 @@ class PaintApplication(framework.Framework):
         """
         Update the current building attributes based on spinbox values.
         """
-        self.building_id = self.building_id_spinbox.get()
-        self.building_height = self.building_height_spinbox.get()
-        self.building_type = self.building_type_spinbox.get()
+        self.building_id = int(self.building_id_spinbox.get())
+        self.building_height = int(self.building_height_spinbox.get())
+        self.building_type = int(self.building_type_spinbox.get())
+        
+    def generate_report(self):
+        """Trigger the analysis report."""
+        report.generate_report(self.root, self.pixels, self.nx, self.ny, self.original_res, self.origin)
+        
+    def change_origin(self):
+        """Change the origin of the grid with a simple input form (prefilled with current values)."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change Origin")
+        dialog.geometry("300x200")
+        dialog.resizable(False, False)
+
+        labels = ["Latitude (°N):", "Longitude (°E):", "Projected X (m):", "Projected Y (m):"]
+        current_values = [
+            str(self.origin[0]),  # Latitude
+            str(self.origin[1]),  # Longitude
+            str(self.origin[2]),  # Projected X
+            str(self.origin[3])   # Projected Y
+        ]
+
+        entries = []
+
+        for i, label in enumerate(labels):
+            tk.Label(dialog, text=label).pack()
+            entry = tk.Entry(dialog)
+            entry.insert(0, current_values[i])  # Prefill with current value
+            entry.pack()
+            entries.append(entry)
+
+        def submit():
+            """Retrieve values and update origin."""
+            try:
+                lat = float(entries[0].get())
+                lon = float(entries[1].get())
+                x = float(entries[2].get())
+                y = float(entries[3].get())
+
+                self.origin = (lat, lon, x, y)
+                dialog.destroy()
+
+                tk.messagebox.showinfo("Origin Updated",
+                    f"New Origin Set:\nLatitude: {lat:.6f}°N\nLongitude: {lon:.6f}°E\n"
+                    f"Projected X: {x:.2f} m\nProjected Y: {y:.2f} m")
+
+            except ValueError:
+                tk.messagebox.showerror("Invalid Input", "Please enter valid numeric values.")
+
+        tk.Button(dialog, text="OK", command=submit).pack(pady=10)
+
+        dialog.grab_set()  # Make it modal
+        dialog.wait_window()
+
         
         
 if __name__ == '__main__':
