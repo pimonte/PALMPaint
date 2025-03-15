@@ -65,7 +65,7 @@ def generate_report(root, pixels, nx, ny, dxy, ori):
     building_data = {}
     if land_use_counts["building"] > 0:
         # Calculate building statistics
-        max_height = max(pixel["building_height"] for pixel in pixels.values() if "building_height" in pixel)
+        max_height = float(max(pixel["building_height"] for pixel in pixels.values() if "building_height" in pixel))
         min_height = min(pixel["building_height"] for pixel in pixels.values() if "building_height" in pixel and pixel["building_height"] != -127)
         avg_height = sum(pixel["building_height"] for pixel in pixels.values() if "building_height" in pixel and pixel["building_height"] != -127) / land_use_counts["building"]
         unique_building_ids = set(pixel["building_id"] for pixel in pixels.values() if "building_id" in pixel and pixel["building_height"] != -127)

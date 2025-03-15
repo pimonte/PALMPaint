@@ -43,14 +43,9 @@ class PaintApplication(framework.Framework):
     current_item = None
     brush_size = 1
     
-    # Initialize attributes for building tool
-    building_id = 1
-    building_height = 10
-    building_type = 2
-    
 
     tool_bar_functions = (
-        "vegetation", "pavement", "soil", "water", "building")
+        "vegetation", "pavement", "bare soil", "water", "building")
     selected_tool_bar_function = tool_bar_functions[0]
     
     
@@ -69,7 +64,8 @@ class PaintApplication(framework.Framework):
                        
     def get_pixel_position(self):
         col = int(self.start_x // self.res)     
-        row = int(self.start_y // self.res)
+        #row = int(self.start_y // self.res)
+        row = (self.ny - 1) - int(self.start_y // self.res)
         
         return row, col
     
@@ -306,11 +302,11 @@ class PaintApplication(framework.Framework):
         self.pixels = grid
         self.nx = nx
         self.ny = ny
+        self.original_res = res
         self.res = res
         self.origin = origin
-        
-        
 
+        self.rescale_grid()
         # Redraw the grid to reflect the loaded data
         self.update_grid(self.nx, self.ny, self.res)
         print(f"Loaded NetCDF project from {file_path}")    
@@ -462,24 +458,45 @@ class PaintApplication(framework.Framework):
     def function_not_defined(self):
         pass
     
+    def rescale_grid(self):
+        """Rescale the grid resolution to fit 80% of the screen."""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Scale to 80% of the screen
+        desired_width = int(screen_width * 0.8)
+        desired_height = int(screen_height * 0.8)
+
+        # Calculate new resolution (keep the aspect ratio)
+        computed_res = int(min(desired_width / self.nx, desired_height / self.ny))
+
+        # Apply new resolution if it differs from the current one
+        if computed_res != self.res:
+            self.res = computed_res
+
+    
     def __init__(self, root,  nx=16, ny=16, res=4):
         self.nx = nx
         self.ny = ny
         self.original_res = res
         self.res = res
+        self.building_id = 1
+        self.building_height = self.original_res  # Start at grid width step
+        self.building_type = 2
         
         self.undo_stack = []
         self.redo_stack = []
         # Get screen dimensions
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        print(screen_width, screen_height)
-        desired_width = int(screen_width * 0.8)
-        desired_height = int(screen_height * 0.8)
-        computed_display_res = int(min(desired_width / nx, desired_height / ny))
-        self.res = computed_display_res
+        # screen_width = root.winfo_screenwidth()
+        # screen_height = root.winfo_screenheight()
+        # print(screen_width, screen_height)
+        # desired_width = int(screen_width * 0.8)
+        # desired_height = int(screen_height * 0.8)
+        # computed_display_res = int(min(desired_width / nx, desired_height / ny))
+        # self.res = computed_display_res
         
         super().__init__(root)
+        self.rescale_grid()
         self.create_gui()
         self.draw_grid(self.nx, self.ny, self.res)
         self.bind_mouse()
@@ -492,7 +509,8 @@ class PaintApplication(framework.Framework):
         self.pixels = {}
         for row in range(ny):
             for col in range(nx):
-                x1, y1 = col * res, row * res
+                #x1, y1 = col * res, row * res
+                x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
                 rect = self.canvas.create_rectangle(x1, y1, x2, y2, 
                                                     fill="brown", outline="white")
@@ -515,7 +533,8 @@ class PaintApplication(framework.Framework):
         #self.canvas.delete("all")
         for row in range(ny):
             for col in range(nx):
-                x1, y1 = col*res, row*res
+                x1, y1 = col * res, (ny - 1 - row) * res
+                #x1, y1 = col*res, row*res
                 x2, y2 = x1 + res, y1 + res
                 rect = self.canvas.create_rectangle(x1, y1, x2, y2, 
                                                     fill=self.pixels[(row, col)]["color"], 
@@ -618,7 +637,8 @@ class PaintApplication(framework.Framework):
     def show_current_coordinates(self, event=None):
         """Update the current coordinate label based on mouse movement."""
         x_coordinate = int(self.canvas.canvasx(event.x) // self.res)
-        y_coordinate = int(self.canvas.canvasx(event.y) // self.res)
+        #y_coordinate = int(self.canvas.canvasx(event.y) // self.res)
+        y_coordinate = (self.ny - 1) - int(self.canvas.canvasy(event.y) // self.res)
         coordinate_string = "nx:{0}\nny:{1}".format(x_coordinate, y_coordinate)
         self.current_coordinate_label.config(text=coordinate_string)
         
@@ -734,7 +754,7 @@ class PaintApplication(framework.Framework):
         self.building_id_spinbox.pack(side="left")
         tk.Label(self.top_bar, text='building_height:').pack(side="left", padx=5)
         self.building_height_spinbox = tk.Spinbox(
-            self.top_bar, from_=1, to=200, width=3, textvariable=initial_height, command=self.update_building_attributes)
+            self.top_bar, from_= self.original_res, to=self.original_res * 100, increment=self.original_res, width=3, textvariable=self.original_res, command=self.update_building_attributes)
         self.building_height_spinbox.pack(side="left")
         tk.Label(self.top_bar, text='building_type:').pack(side="left", padx=5)
         self.building_type_spinbox = tk.Spinbox(

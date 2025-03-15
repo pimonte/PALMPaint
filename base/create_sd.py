@@ -44,14 +44,14 @@ def Save(data, res, ori, filename="quicksave"):
                 building_type_data[row, col] = metadata["building_type"]
                 
         # flip the data
-        vegetation_data = np.flipud(vegetation_data)
-        soil_data = np.flipud(soil_data)
-        pavement_data = np.flipud(pavement_data)
-        water_data = np.flipud(water_data)
-        building_id_data = np.flipud(building_id_data)
-        building_height_data = np.flipud(building_height_data)
-        building_type_data = np.flipud(building_type_data)
-        height_data = np.flipud(height_data)
+        # vegetation_data = np.flipud(vegetation_data)
+        # soil_data = np.flipud(soil_data)
+        # pavement_data = np.flipud(pavement_data)
+        # water_data = np.flipud(water_data)
+        # building_id_data = np.flipud(building_id_data)
+        # building_height_data = np.flipud(building_height_data)
+        # building_type_data = np.flipud(building_type_data)
+        # height_data = np.flipud(height_data)
         
                 
         #print("VEGETATION", vegetation_data)

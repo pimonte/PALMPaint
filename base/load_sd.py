@@ -83,13 +83,13 @@ def Load(filename="output.nc"):
     bldg_height = get_data("buildings_2d")  # Building height is saved here
     bldg_type = get_data("building_type")
 
-    veg = np.flipud(veg)
-    soil = np.flipud(soil)
-    pav = np.flipud(pav)
-    water = np.flipud(water)
-    bldg_id = np.flipud(bldg_id)
-    bldg_height = np.flipud(bldg_height)
-    bldg_type = np.flipud(bldg_type)
+    # veg = np.flipud(veg)
+    # soil = np.flipud(soil)
+    # pav = np.flipud(pav)
+    # water = np.flipud(water)
+    # bldg_id = np.flipud(bldg_id)
+    # bldg_height = np.flipud(bldg_height)
+    # bldg_type = np.flipud(bldg_type)
 
     # Build the grid dictionary
     grid = {}
