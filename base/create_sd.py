@@ -4,12 +4,13 @@ This file is meant to be used with the PALMPaint application.
     Copyright (C) 2025  Pierre Lampe
     Licensed under the GNU General Public License v3 or later.
 """
+from importlib import metadata
 import netCDF4 as nc
 from netCDF4 import Dataset
 import numpy as np
 
 
-def Save(data, res, ori, filename="quicksave"):
+def Save(data, res, ori, surface_config, filename="quicksave"):
         #print("DATA", data)
         rows = [key[0] for key in data.keys()]  # Extract all row indices
         cols = [key[1] for key in data.keys()]  # Extract all column indices
@@ -25,10 +26,12 @@ def Save(data, res, ori, filename="quicksave"):
         soil_data = np.full((ny, nx), -1) 
         pavement_data = np.full((ny, nx), -1)
         water_data = np.full((ny, nx), -1)
-        building_id_data = np.full((ny, nx), -1)
+        building_id_data = np.full((ny, nx), -1, dtype=np.int16)
         building_height_data = np.full((ny, nx), -1)
         building_type_data = np.full((ny, nx), -1)
-        height_data = np.full((ny, nx), -1)
+        height_data = np.full((ny, nx), -9999.0, dtype=np.float32)
+        
+        water_pars_data = np.full((7, ny, nx), -9999.0, dtype=np.float32)
         
         for (row, col), metadata in data.items():
             #print(metadata)
@@ -48,6 +51,18 @@ def Save(data, res, ori, filename="quicksave"):
                 building_height_data[row, col] = metadata["building_height"]
             if "building_type" in metadata and metadata["building_type"] is not None:
                 building_type_data[row, col] = metadata["building_type"]
+                
+            # write water_pars only if temperature differs from the default of water_type
+            if metadata.get("water_type", -127) > -127:
+                water_type_value = int(metadata["water_type"])
+                water_temp = float(metadata.get("water_temperature", -9999.0))
+
+                default_temp = float(
+                    surface_config["water"]["types"][water_type_value]["water_temperature"]
+                )
+
+                if water_temp > -9999.0 and abs(water_temp - default_temp) > 1e-6:
+                    water_pars_data[0, row, col] = water_temp
                 
         # flip the data
         # vegetation_data = np.flipud(vegetation_data)
@@ -105,9 +120,7 @@ def Save(data, res, ori, filename="quicksave"):
             nc_water_type.units = "1"
             nc_water_type[:, :] = nc_water_type._FillValue
             
-
-            
-                        # Coordinates
+            # Coordinates
         # -----------
             
             x = nc_file.createVariable('x', 'f4', ('x',))
@@ -126,7 +139,11 @@ def Save(data, res, ori, filename="quicksave"):
             
             
             # Where data is > fill_value, set the data in the NetCDF file
-            nc_zt[:,:]= 0.0
+            nc_zt[:, :] = np.where(
+                height_data[:, :] > -9999.0,
+                height_data[:, :],
+                nc_zt._FillValue,
+            )
             
             nc_vegetation_type[:, :] = nc_vegetation_type._FillValue
             nc_vegetation_type[:, :] = np.where(
@@ -152,13 +169,22 @@ def Save(data, res, ori, filename="quicksave"):
             water_data[:, :],
             nc_water_type._FillValue)
             
+            if np.any(water_pars_data > -9999.0):
+                nc_file.createDimension('nwater_pars', 7)
+
+                nc_water_pars = nc_file.createVariable(
+                    'water_pars', 'f4', ('nwater_pars', 'y', 'x'), fill_value=-9999.0
+                )
+                nc_water_pars.long_name = "grid point specific water parameters"
+                nc_water_pars.units = "see nwater_pars index definition"
+                nc_water_pars[:, :, :] = water_pars_data
             
             # Buildings
             if np.any(building_id_data > -1):
                 print("BUILDINGS detected (switch on USM Namelist in PALM)")
                 
                 nc_building_id = nc_file.createVariable(
-                'building_id', 'i1', ('y', 'x'), fill_value=-127)
+                'building_id', 'i2', ('y', 'x'), fill_value=-127)
                 nc_building_id.long_name = "building ID"
                 nc_building_id.units = "1"
                 nc_building_id[:, :] = nc_building_id._FillValue

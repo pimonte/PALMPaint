@@ -31,6 +31,11 @@ class TkCanvasBackend:
     def __init__(self, root, model, nx, ny, res):
         self.model  = model
         self.pixels = {}   # {(row, col): {"id": canvas_id, "outline": colour}}
+        self.show_grid_lines = True
+        self.view_mode = "landcover"
+        self.height_view_min = 0.0
+        self.height_view_step = 1.0
+        self.height_view_levels = 10
         self._setup_canvas(root, nx, ny, res)
 
     # ------------------------------------------------------------------
@@ -73,36 +78,83 @@ class TkCanvasBackend:
         if you need to wipe the canvas.
         """
         self.pixels = {}
+        outline_color = "white" if self.show_grid_lines else ""
         for row in range(ny):
             for col in range(nx):
                 x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
                 rect = self.canvas.create_rectangle(
-                    x1, y1, x2, y2, fill="brown", outline="white"
+                    x1, y1, x2, y2, fill="brown", outline=outline_color
                 )
-                self.pixels[(row, col)] = {"id": rect, "outline": "white"}
+                self.pixels[(row, col)] = {"id": rect, "outline": outline_color}
+                
+    def set_grid_lines_visible(self, visible):
+        """Show or hide grid cell outlines."""
+        self.show_grid_lines = bool(visible)
+        outline_color = "white" if visible else ""
 
+        for pixel in self.pixels.values():
+            self.canvas.itemconfig(pixel["id"], outline=outline_color)
+            pixel["outline"] = outline_color
+            
     def update_grid(self, nx, ny, res):
         """Redraw all canvas rectangles from the current model state."""
+        outline_color = "white" if self.show_grid_lines else ""
+        z_min = z_max = None
+        if self.view_mode == "heightmap":
+            z_min = self.height_view_min
+            z_max = self.height_view_min + self.height_view_step * self.height_view_levels
+
         for row in range(ny):
             for col in range(nx):
                 x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
-                color   = self.model.get_color(row, col)
-                outline = self.pixels.get((row, col), {}).get("outline", "white")
-                rect = self.canvas.create_rectangle(
-                    x1, y1, x2, y2, fill=color, outline=outline
+                color = self.model.get_color(
+                    row,
+                    col,
+                    view_mode=self.view_mode,
+                    z_min=z_min,
+                    z_max=z_max,
+                    z_step=self.height_view_step,
+                    levels=self.height_view_levels,
                 )
-                if (row, col) not in self.pixels:
-                    self.pixels[(row, col)] = {"outline": "white"}
-                self.pixels[(row, col)]["id"] = rect
+                pixel_info = self.pixels.get((row, col))
+
+                if pixel_info is None:
+                    rect = self.canvas.create_rectangle(
+                        x1, y1, x2, y2, fill=color, outline=outline_color
+                    )
+                    self.pixels[(row, col)] = {"id": rect, "outline": outline_color}
+                else:
+                    self.canvas.coords(pixel_info["id"], x1, y1, x2, y2)
+                    self.canvas.itemconfig(
+                        pixel_info["id"], fill=color, outline=outline_color
+                    )
+                    pixel_info["outline"] = outline_color
 
     def update_pixel(self, row, col):
         """Refresh the fill colour of a single canvas rectangle."""
         self.canvas.itemconfig(
             self.pixels[(row, col)]["id"],
-            fill=self.model.get_color(row, col),
+            fill=self.model.get_color(
+                row,
+                col,
+                view_mode=self.view_mode,
+                z_min=self.height_view_min,
+                z_step=self.height_view_step,
+                levels=self.height_view_levels,
+            ),
         )
+
+    def set_view_mode(self, view_mode):
+        """Set active display mode used for color lookup."""
+        self.view_mode = view_mode
+
+    def set_height_view_config(self, z_min, z_step, levels):
+        """Set fixed discrete normalization used by the heightmap view."""
+        self.height_view_min = float(z_min)
+        self.height_view_step = max(1e-6, float(z_step))
+        self.height_view_levels = max(1, int(levels))
 
     # ------------------------------------------------------------------
     # Zoom

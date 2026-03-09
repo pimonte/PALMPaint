@@ -8,6 +8,33 @@ This file is meant to be used with the PALMPaint application.
 from netCDF4 import Dataset
 import numpy as np
 
+def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
+    """Load a 2D variable (y, x) or return a filled fallback array."""
+    if var_name in nc_file.variables:
+        data = nc_file.variables[var_name][:]
+        if hasattr(data, "filled"):
+            data = data.filled(nc_file.variables[var_name]._FillValue)
+        if dtype is not None:
+            data = data.astype(dtype)
+        return data
+
+    return np.full(
+        (ny, nx),
+        fill_value,
+        dtype=dtype if dtype is not None else np.float32
+    )
+
+
+def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np.float32):
+    """Load a 3D parameter variable (npars, y, x) or return a filled fallback array."""
+    if var_name in nc_file.variables:
+        data = nc_file.variables[var_name][:]
+        if hasattr(data, "filled"):
+            data = data.filled(nc_file.variables[var_name]._FillValue)
+        return data.astype(dtype)
+
+    return np.full((npars, ny, nx), fill_value, dtype=dtype)
+
 def Load(filename="output.nc"):
     """
     Load grid data from a NetCDF file and convert it into a dictionary
@@ -47,18 +74,24 @@ def Load(filename="output.nc"):
                 return var
             return np.full((ny, nx), -127)
 
-        veg        = get_data("vegetation_type")
-        soil       = get_data("soil_type")
-        pav        = get_data("pavement_type")
-        water      = get_data("water_type")
-        bldg_id    = get_data("building_id")
-        bldg_height = get_data("buildings_2d")
-        bldg_type  = get_data("building_type")
+        # --- 2D fields ---
+        veg = get_2d_data(nc_file, "vegetation_type", ny, nx, fill_value=-127, dtype=np.int8)
+        soil = get_2d_data(nc_file, "soil_type", ny, nx, fill_value=-127, dtype=np.int8)
+        pav = get_2d_data(nc_file, "pavement_type", ny, nx, fill_value=-127, dtype=np.int8)
+        water = get_2d_data(nc_file, "water_type", ny, nx, fill_value=-127, dtype=np.int8)
+        bldg_id = get_2d_data(nc_file, "building_id", ny, nx, fill_value=-127, dtype=np.int16)
+        bldg_height = get_2d_data(nc_file, "buildings_2d", ny, nx, fill_value=-9999.0, dtype=np.float32)
+        bldg_type = get_2d_data(nc_file, "building_type", ny, nx, fill_value=-127, dtype=np.int8)
+        zt = get_2d_data(nc_file, "zt", ny, nx, fill_value=0.0, dtype=np.float32)
+
+        # --- parameter stacks / pars ---
+        water_pars = get_pars_data(nc_file, "water_pars", 7, ny, nx, fill_value=-9999.0, dtype=np.float32)
 
         grid = {}
         for row in range(ny):
             for col in range(nx):
                 grid[(row, col)] = {
+                    "zt":              float(zt[row, col]),
                     "vegetation_type": int(veg[row, col]),
                     "soil_type":       int(soil[row, col]),
                     "pavement_type":   int(pav[row, col]),
@@ -66,6 +99,9 @@ def Load(filename="output.nc"):
                     "building_id":     int(bldg_id[row, col]),
                     "building_height": float(bldg_height[row, col]),
                     "building_type":   int(bldg_type[row, col]),
+                    
+                    "water_temperature": float(water_pars[0, row, col]),
                 }
 
     return grid, nx, ny, res, ori
+
