@@ -1,3 +1,9 @@
+"""
+Module to save grid data to a NetCDF file.
+This file is meant to be used with the PALMPaint application.
+    Copyright (C) 2025  Pierre Lampe
+    Licensed under the GNU General Public License v3 or later.
+"""
 import netCDF4 as nc
 from netCDF4 import Dataset
 import numpy as np
