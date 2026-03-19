@@ -19,9 +19,9 @@ simple SDs for PALM.
 """
 
 import copy
-import json
 import math
 import os
+import time
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
@@ -40,12 +40,8 @@ import base.welcome_screen as welcome_screen
 
 class PaintApplication(framework.Framework):
     origin = (52.50965, 13.3139, 3455249.0, 5424815.0) # lat, lon, projected x, projected y
-    start_x = 0
-    start_y = 0
-    end_x = 0
-    end_y = 0
-    current_item = None
     brush_size = 1
+    active_cell = None
     
 
     tool_bar_functions = (
@@ -89,36 +85,14 @@ class PaintApplication(framework.Framework):
     def get_soil_definition(self, soil_type):
         return self.surface_config["soil"]["types"][soil_type]
     
-    vegetation_categories = {
-        "Ground": [1, 9, 10, 12, 13],
-        "Grass & Crops": [2, 3, 8, 11],
-        "Trees": [4, 5, 6, 7, 17, 18],
-        "Shrubs & Wetlands": [14, 15, 16],
-    }
-    
-    vegetation_definitions = {
-        1:  {"label": "bare soil", "color": "brown",       "category": "Ground"},
-        2:  {"label": "crops, mixed farming", "color": "yellowgreen", "category": "Grass & Crops"},
-        3:  {"label": "short grass", "color": "green",     "category": "Grass & Crops"},
-        4:  {"label": "evergreen needleleaf trees", "color": "darkgreen", "category": "Trees"},
-        5:  {"label": "deciduous needleleaf trees", "color": "forestgreen", "category": "Trees"},
-        6:  {"label": "evergreen broadleaf trees", "color": "limegreen", "category": "Trees"},
-        7:  {"label": "deciduous broadleaf trees", "color": "olivedrab", "category": "Trees"},
-        8:  {"label": "tall grass", "color": "lawngreen",  "category": "Grass & Crops"},
-        9:  {"label": "desert", "color": "khaki",          "category": "Ground"},
-        10: {"label": "tundra", "color": "darkseagreen",   "category": "Ground"},
-        11: {"label": "irrigated crops", "color": "chartreuse", "category": "Grass & Crops"},
-        12: {"label": "semidesert", "color": "tan",        "category": "Ground"},
-        13: {"label": "ice caps and glaciers", "color": "aliceblue", "category": "Ground"},
-        14: {"label": "bogs and marshes", "color": "mediumseagreen", "category": "Shrubs & Wetlands"},
-        15: {"label": "evergreen shrubs", "color": "seagreen", "category": "Shrubs & Wetlands"},
-        16: {"label": "deciduous shrubs", "color": "yellowgreen", "category": "Shrubs & Wetlands"},
-        17: {"label": "mixed forest/woodland", "color": "green4", "category": "Trees"},
-        18: {"label": "interrupted forest", "color": "darkolivegreen", "category": "Trees"},
-    }  
+    def refresh_project_info_labels(self):
+        """Refresh sidebar labels that depend on the currently loaded project."""
+        if hasattr(self, "static_label"):
+            self.static_label.config(text=f"Grid width: {self.original_res} m")
     
     def execute_selected_method(self):
-        self.current_item = None
+        if self.active_cell is None:
+            return
         if self.active_view == "heightmap":
             self.height_tool()
             return
@@ -137,10 +111,11 @@ class PaintApplication(framework.Framework):
 
     def height_tool(self):
         """Apply height editing mode (Raise/Lower/Set Height) to brush pixels."""
-        center_row, center_col = self.get_pixel_position()
+        center_row, center_col = self.active_cell
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         step = float(self.original_res) if self.original_res > 0 else 1.0
 
+        affected = []
         for row, col in affected_pixels:
             if (row, col) not in self.pixels:
                 continue
@@ -154,13 +129,15 @@ class PaintApplication(framework.Framework):
                 new_height = self.quantize_height(self.height_set_value)
 
             self.update_pixel(row, col, zt=new_height)
-            self.update_canvas(row, col)
+            affected.append((row, col))
+        self.backend.update_pixels(affected)
 
     def soil_tool(self):
         """Paint soil types, but never overwrite water or building cells."""
-        center_row, center_col = self.get_pixel_position()
-        affected_pixels = self.get_pixels_in_brush(center_row, center_col)
+        row, col = self.active_cell
+        affected_pixels = self.get_pixels_in_brush(row, col)
 
+        affected = []
         for row, col in affected_pixels:
             if (row, col) not in self.pixels:
                 continue
@@ -174,20 +151,8 @@ class PaintApplication(framework.Framework):
                 continue
 
             self.update_pixel(row, col, soil_type=self.selected_soil_type)
-            self.update_canvas(row, col)
-        
-    def on_mouse_button_pressed_motion(self, event):
-        self.start_x = self.canvas.canvasx(event.x)
-        self.start_y = self.canvas.canvasy(event.y)
-        #self.canvas.delete(self.current_item)
-        self.execute_selected_method()  
-                       
-    def get_pixel_position(self):
-        col = int(self.start_x // self.res)     
-        #row = int(self.start_y // self.res)
-        row = (self.ny - 1) - int(self.start_y // self.res)
-        
-        return row, col
+            affected.append((row, col))
+        self.backend.update_pixels(affected)
     
     def get_pixels_in_brush(self, center_row, center_col):
         """
@@ -223,29 +188,69 @@ class PaintApplication(framework.Framework):
         kwargs.pop("outline", None)
         self.model.set_pixel(row, col, **kwargs)
             
+    def _apply_brush(self, pixel_data, *, water_temp=None):
+        """Reset all surface layers to fill values, then apply pixel_data to
+        every cell in the current brush.
+
+        Parameters
+        ----------
+        pixel_data : dict
+            Only the fields that should be set to a meaningful value.
+            All other surface layers are automatically reset to the model's
+            fill constants (INT_FILL / FLOAT_FILL).
+        water_temp : float or None
+            When given, calls set_water_parameter(0, row, col, water_temp).
+            When None (default), calls clear_water_parameters instead.
+        """
+        fi = self.model.INT_FILL
+        ff = self.model.FLOAT_FILL
+        reset = dict(
+            vegetation_type=fi, soil_type=fi,
+            pavement_type=fi, water_type=fi,
+            building_id=fi, building_height=ff, building_type=fi,
+        )
+        reset.update(pixel_data)
+        row, col = self.active_cell
+        affected = [
+            (r, c)
+            for r, c in self.get_pixels_in_brush(row, col)
+            if (r, c) in self.pixels
+        ]
+        for r, c in affected:
+            self.update_pixel(r, c, **reset)
+            if water_temp is not None:
+                self.model.set_water_parameter(0, r, c, water_temp)
+            else:
+                self.model.clear_water_parameters(r, c)
+        self.backend.update_pixels(affected)
+
     def vegetation(self):
         """Apply vegetation tool to affected pixels."""
-        center_row, center_col = self.get_pixel_position()
-        affected_pixels = self.get_pixels_in_brush(center_row, center_col)
         veg_type = self.selected_vegetation_type
-        
         veg_def = self.get_vegetation_definition(veg_type)
         soil_type = veg_def.get("soil_type", self.surface_config["soil"]["default_type"])
-
-        for row, col in affected_pixels:
-            if (row, col) in self.pixels:
-                self.update_pixel(
-                    row, col,
-                    vegetation_type=veg_type,
-                    soil_type= soil_type,
-                    pavement_type=-127,
-                    water_type=-127,
-                    building_id=-127,
-                    building_height=-127,
-                    building_type=-127,
-                )
-                self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
+        self._apply_brush(dict(vegetation_type=veg_type, soil_type=soil_type))
+        
+    def pavement(self):
+        pavement_type = self.selected_pavement_type
+        pav_def = self.get_pavement_definition(pavement_type)
+        soil_type = pav_def.get("soil_type", self.surface_config["soil"]["default_type"])
+        self._apply_brush(dict(pavement_type=pavement_type, soil_type=soil_type))
+        
+    def water(self):
+        """Apply water tool to affected pixels."""
+        self.update_water_temperature()
+        self._apply_brush(
+            dict(water_type=self.selected_water_type),
+            water_temp=self.selected_water_temperature,
+        )
+        
+    def building(self):
+        self._apply_brush(dict(
+            building_id=self.building_id,
+            building_height=self.building_height,
+            building_type=self.building_type,
+        ))
 
     def bucket_fill(self):
         self.save_state()
@@ -259,154 +264,73 @@ class PaintApplication(framework.Framework):
                 if is_water or is_building:
                     continue
                 self.update_pixel(row, col, soil_type=self.selected_soil_type)
-                self.update_canvas(row, col)
+            self.backend.update_grid(self.nx, self.ny, self.res)
             return
+
+        fi = self.model.INT_FILL
+        ff = self.model.FLOAT_FILL
+        reset = dict(
+            vegetation_type=fi, soil_type=fi,
+            pavement_type=fi, water_type=fi,
+            building_id=fi, building_height=ff, building_type=fi,
+        )
 
         if self.selected_tool_bar_function == "vegetation":
             veg_type = self.selected_vegetation_type
             veg_def = self.get_vegetation_definition(veg_type)
             soil_type = veg_def.get("soil_type", self.surface_config["soil"]["default_type"])
+            pixel_data = {**reset, "vegetation_type": veg_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
-                self.update_pixel(
-                    row, col,
-                    vegetation_type=veg_type,
-                    soil_type= soil_type,
-                    pavement_type=-127,
-                    water_type=-127,
-                    building_id=-127,
-                    building_height=-127,
-                    building_type=-127
-                )
+                self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
         elif self.selected_tool_bar_function == "pavement":
             pavement_type = self.selected_pavement_type
-            soil_type = self.surface_config["soil"]["default_type"]
-
+            pav_def = self.get_pavement_definition(pavement_type)
+            soil_type = pav_def.get("soil_type", self.surface_config["soil"]["default_type"])
+            pixel_data = {**reset, "pavement_type": pavement_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
-                self.update_pixel(
-                    row, col,
-                    pavement_type=pavement_type,
-                    soil_type=soil_type,
-                    vegetation_type=-127,
-                    water_type=-127,
-                    building_id=-127,
-                    building_height=-127,
-                    building_type=-127
-                )
+                self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
         elif self.selected_tool_bar_function == "water":
             self.update_water_temperature()
-            water_type = self.selected_water_type
-            water_temperature = self.selected_water_temperature
-
+            pixel_data = {**reset, "water_type": self.selected_water_type}
             for (row, col) in self.pixels.keys():
-                self.update_pixel(
-                    row, col,
-                    water_type=water_type,
-                    pavement_type=-127,
-                    vegetation_type=-127,
-                    soil_type=-127,
-                    building_id=-127,
-                    building_height=-127,
-                    building_type=-127
-                )
-                self.model.set_water_parameter(0, row, col, water_temperature)
-                self.update_canvas(row, col)
+                self.update_pixel(row, col, **pixel_data)
+                self.model.set_water_parameter(0, row, col, self.selected_water_temperature)
         elif self.selected_tool_bar_function == "building":
+            pixel_data = {**reset,
+                          "building_id": self.building_id,
+                          "building_height": self.building_height,
+                          "building_type": self.building_type}
             for (row, col) in self.pixels.keys():
-                self.update_pixel(row, col,
-                                building_id=self.building_id,
-                                building_height=self.building_height,
-                                building_type=self.building_type,
-                                pavement_type=-127,
-                                vegetation_type=-127,
-                                soil_type=-127,
-                                water_type=-127)
+                self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
+        self.backend.update_grid(self.nx, self.ny, self.res)
         
-    def pavement(self):
-        center_row, center_col = self.get_pixel_position()
-        affected_pixels = self.get_pixels_in_brush(center_row, center_col)
-        
-        pavement_type = self.selected_pavement_type
-        pav_def = self.get_pavement_definition(pavement_type)
-        soil_type = pav_def.get("soil_type", self.surface_config["soil"]["default_type"])
-    
-        for row, col in affected_pixels:
-            if (row, col) in self.pixels:
-                self.update_pixel(row, col,
-                                  pavement_type=pavement_type,
-                                  soil_type=soil_type,
-                                  vegetation_type=-127,
-                                  water_type=-127,
-                                  building_id=-127,
-                                  building_height=-127,
-                                  building_type=-127)
-                self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
-        
-    def water(self):
-        """Apply water tool to affected pixels."""
-        self.update_water_temperature()
-        
-        center_row, center_col = self.get_pixel_position()
-        affected_pixels = self.get_pixels_in_brush(center_row, center_col)
 
-        water_type = self.selected_water_type
-        water_temperature = self.selected_water_temperature
-
-        for row, col in affected_pixels:
-            if (row, col) in self.pixels:
-                self.update_pixel(
-                    row, col,
-                    water_type=water_type,
-                    pavement_type=-127,
-                    vegetation_type=-127,
-                    soil_type=-127,
-                    building_id=-127,
-                    building_height=-127,
-                    building_type=-127
-                )
-                self.model.set_water_parameter(0, row, col, water_temperature)
-                self.update_canvas(row, col)
-        
-    def building(self):
-        
-        center_row, center_col = self.get_pixel_position()
-        affected_pixels = self.get_pixels_in_brush(center_row, center_col)
-        
-        for row, col in affected_pixels:
-            if (row, col) in self.pixels:
-                self.update_pixel(row, col, 
-                                  building_id=self.building_id, 
-                                  building_height=self.building_height, 
-                                  building_type=self.building_type,
-                                  pavement_type=-127, 
-                                  vegetation_type=-127, 
-                                  soil_type=-127, 
-                                  water_type=-127, 
-                                  color="black")
-                self.model.clear_water_parameters(row, col)
-                self.update_canvas(row, col)
                 
  # ------------------ File Menu Operations ------------------
     
     def new_project(self):
         if not self.confirm_action("New Project", "Are you sure you want to start a new project? Unsaved work will be lost."):
-         return
+            return
 
+        result = welcome_screen.get_welcome_input(self.root)
+        
+        if result[0] == "load":
+            _, file_path = result
+            self.load_project_netcdf(file_path)
+            return
+            
+        _, new_nx, new_ny, new_res = result
         self.backend.clear()
-
-        new_nx, new_ny, new_res = welcome_screen.get_welcome_input(self.root)
         self.nx = new_nx
         self.ny = new_ny
         self.original_res = new_res
-        self.res = new_res 
+        self.res = new_res  
 
         self.draw_grid(self.nx, self.ny, self.res)
+        self.refresh_project_info_labels()
         
     def confirm_action(self, title, message):
         return tk.messagebox.askyesno(title, message)
@@ -423,7 +347,35 @@ class PaintApplication(framework.Framework):
         if not file_path:
             return
         Save(self.model.to_legacy_dict(), self.original_res, self.origin, self.surface_config, file_path)
+    def load_project_netcdf_from_path(self, file_path):
+        if not file_path:
+            return  # No file path provided
+        try:
+            grid, nx, ny, res, origin = Load(file_path)
+        except Exception as e:
+            print(f"Error loading NetCDF file: {e}")
+            return
         
+        # Replace current state with loaded project
+        self.nx = nx
+        self.ny = ny
+        self.original_res = res
+        self.res = res
+        self.origin = origin
+        
+        self.model = gridmodel.GridModel.from_legacy_dict(grid, nx, ny, res, self.surface_config)
+        self.backend.model = self.model
+        self.rescale_grid()
+        
+        self.backend.clear()
+        self.backend.clear_hover_preview()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+        self.backend.set_grid_lines_visible(self.show_grid_lines)
+        
+        self.refresh_project_info_labels()
+        
+        print(f"Loaded NetCDF project from {file_path}")
+            
     def load_project_netcdf(self):
         """
         Open a file dialog to let the user choose a NetCDF project file,
@@ -435,24 +387,7 @@ class PaintApplication(framework.Framework):
         )
         if not file_path:
             return  # User cancelled
-
-        try:
-            grid, nx, ny, res, origin = Load(file_path)
-        except Exception as e:
-            print(f"Error loading NetCDF file: {e}")
-            return
-        
-        self.nx = nx
-        self.ny = ny
-        self.original_res = res
-        self.res = res
-        self.origin = origin
-        self.model = gridmodel.GridModel.from_legacy_dict(grid, nx, ny, res, self.surface_config)
-        self.backend.model = self.model
-        self.rescale_grid()
-        self.backend.clear()
-        self.backend.update_grid(self.nx, self.ny, self.res)
-        print(f"Loaded NetCDF project from {file_path}")    
+        self.load_project_netcdf_from_path(file_path)
     
     def save_state(self):
         self.undo_stack.append(copy.deepcopy(self.model))
@@ -504,7 +439,13 @@ class PaintApplication(framework.Framework):
         self.original_res = res
         self.res = res
         
+        
         self.show_grid_lines = True
+        self.is_panning = False
+        self.zoom_block_until = 0.0
+        self._zoom_after_id = None
+        self._zoom_pending_factor = 1.0
+        self._zoom_pending_anchor = (None, None)
 
         self.building_id = 1
         self.building_height = self.original_res  # Start at grid width step
@@ -534,14 +475,9 @@ class PaintApplication(framework.Framework):
 
         self.undo_stack = []
         self.redo_stack = []
-        # Get screen dimensions
-        # screen_width = root.winfo_screenwidth()
-        # screen_height = root.winfo_screenheight()
-        # print(screen_width, screen_height)
-        # desired_width = int(screen_width * 0.8)
-        # desired_height = int(screen_height * 0.8)
-        # computed_display_res = int(min(desired_width / nx, desired_height / ny))
-        # self.res = computed_display_res
+        
+        self.active_cell = None
+        self.hover_cell = None
         
         super().__init__(root)
         self.rescale_grid()
@@ -581,6 +517,7 @@ class PaintApplication(framework.Framework):
         self.backend.set_grid_lines_visible(self.show_grid_lines)
         self.create_current_coordinate_label()
         self.create_meter_coordinate_label()
+        self.create_cell_info_label()
         self.create_height_legend_widgets()
         self.create_menu()
         self.create_brush_size_slider()
@@ -711,12 +648,9 @@ class PaintApplication(framework.Framework):
             row=18, column=1, columnspan=2, 
             pady=5, padx=1, sticky='w')
 
-    def show_current_coordinates(self, event=None):
+    def show_current_coordinates(self, row, col):
         """Update the current coordinate label based on mouse movement."""
-        x_coordinate = int(self.canvas.canvasx(event.x) // self.res)
-        #y_coordinate = int(self.canvas.canvasx(event.y) // self.res)
-        y_coordinate = (self.ny - 1) - int(self.canvas.canvasy(event.y) // self.res)
-        coordinate_string = "nx:{0}\nny:{1}".format(x_coordinate, y_coordinate)
+        coordinate_string = "nx:{0}\nny:{1}".format(col, row)
         self.current_coordinate_label.config(text=coordinate_string)
         
     def create_meter_coordinate_label(self):
@@ -724,20 +658,116 @@ class PaintApplication(framework.Framework):
         self.meter_coordinate_label = tk.Label(self.tool_bar, text='x:0\ny:0')
         self.meter_coordinate_label.grid(row=20, column=1, columnspan=2, pady=5, padx=1, sticky='w')
 
-    def show_meter_coordinates(self, event=None):
+    def show_meter_coordinates(self, row, col):
         """Update the meter coordinate label based on mouse movement."""
-        # Get grid indices as before
-        grid_x = self.canvas.canvasx(event.x) // self.res
-        grid_y = self.canvas.canvasy(event.y) // self.res
-        
-        # Conversion factor: adjust this factor if each grid cell is not 1 meter.
-        #conversion_factor = self.original_res / 2
-        
-        meter_x = (grid_x + 0.5) * self.original_res
-        meter_y = (grid_y + 0.5) * self.original_res
-
+        meter_x = (col + 0.5) * self.original_res
+        meter_y = (row + 0.5) * self.original_res
         coordinate_string = "x:{:.2f}\ny:{:.2f}".format(meter_x, meter_y)
         self.meter_coordinate_label.config(text=coordinate_string)
+    
+    def create_cell_info_label(self):
+        """Create a fixed-width sidebar area that shows properties of the hovered cell."""
+        self.cell_info_frame = tk.Frame(self.tool_bar, width=220, height=140)
+        self.cell_info_frame.grid(
+            row=22, column=1, columnspan=2,
+            pady=5, padx=1, sticky="nw"
+        )
+        self.cell_info_frame.grid_propagate(False)
+
+        self.cell_info_label = tk.Label(
+            self.cell_info_frame,
+            text="Cell info\nzt: -\nsurface: -\nsoil: -",
+            justify="left",
+            anchor="nw",
+            width=28,          # Breite in Textzeichen
+            wraplength=200,    # Umbruch in Pixeln
+        )
+        self.cell_info_label.pack(fill="both", expand=True)
+
+    def _format_type_label(self, value, definition_getter):
+        """Return a readable 'id (label)' string or '-' for fill values."""
+        if value is None or value <= self.model.INT_FILL:
+            return "-"
+        try:
+            definition = definition_getter(int(value))
+            label = definition.get("label", "unknown")
+            return f"{int(value)} ({label})"
+        except Exception:
+            return str(value)
+
+    def get_cell_info_text(self, row, col):
+        """Build the sidebar text for one grid cell."""
+        if not (0 <= row < self.ny and 0 <= col < self.nx):
+            return "Cell info\nzt: -\nsurface: -\nsoil: -"
+
+        pixel = self.model.get_pixel(row, col)
+
+        zt = float(pixel["zt"])
+        soil_type = int(pixel["soil_type"])
+        vegetation_type = int(pixel["vegetation_type"])
+        pavement_type = int(pixel["pavement_type"])
+        water_type = int(pixel["water_type"])
+        building_id = int(pixel["building_id"])
+        building_height = float(pixel["building_height"])
+        building_type = int(pixel["building_type"])
+        water_temperature = float(pixel["water_temperature"])
+
+        lines = ["Cell info", f"zt: {zt:.2f} m"]
+
+        # Dominant surface content in the same precedence as the renderer:
+        # water -> building -> pavement -> vegetation
+        if water_type > self.model.INT_FILL:
+            water_text = self._format_type_label(water_type, self.get_water_definition)
+            lines.append(f"surface: water {water_text}")
+            if water_temperature > self.model.FLOAT_FILL:
+                lines.append(f"water temp: {water_temperature:.2f} K")
+
+        elif building_id > self.model.INT_FILL or building_height > 0.0:
+            lines.append("surface: building")
+            lines.append(f"building id: {building_id if building_id > self.model.INT_FILL else '-'}")
+            lines.append(
+                f"building height: {building_height:.2f} m"
+                if building_height > 0.0 else "building height: -"
+            )
+            lines.append(
+                f"building type: {building_type}"
+                if building_type > self.model.INT_FILL else "building type: -"
+            )
+
+        elif pavement_type > self.model.INT_FILL:
+            pavement_text = self._format_type_label(pavement_type, self.get_pavement_definition)
+            lines.append(f"surface: pavement {pavement_text}")
+
+        elif vegetation_type > self.model.INT_FILL:
+            vegetation_text = self._format_type_label(vegetation_type, self.get_vegetation_definition)
+            lines.append(f"surface: vegetation {vegetation_text}")
+
+        else:
+            lines.append("surface: -")
+
+        if soil_type > self.model.INT_FILL:
+            soil_text = self._format_type_label(soil_type, self.get_soil_definition)
+            lines.append(f"soil: {soil_text}")
+        else:
+            lines.append("soil: -")
+
+        return "\n".join(lines)
+
+    def show_cell_info(self, row, col):
+        """Update the sidebar cell info based on the hovered/active cell."""
+        self.cell_info_label.config(text=self.get_cell_info_text(row, col))
+
+    def clear_cell_info(self):
+        """Reset the sidebar cell info when the mouse leaves the canvas."""
+        self.cell_info_label.config(text="Cell info\nzt: -\nsurface: -\nsoil: -")  
+    def update_hover_preview(self, row, col):
+        """Preview all cells affected by the current brush."""
+        if not (0 <= row < self.ny and 0 <= col < self.nx):
+            self.backend.clear_hover_preview()
+            return
+
+        affected_pixels = self.get_pixels_in_brush(row, col)
+        self.backend.show_hover_preview(affected_pixels)
         
     # ------------------ Mouse ------------------
     
@@ -748,23 +778,173 @@ class PaintApplication(framework.Framework):
         self.canvas.bind(
             "<Button1-ButtonRelease>", self.on_mouse_button_released)
         self.canvas.bind("<Motion>", self.on_mouse_unpressed_motion)
+        self.canvas.bind("<Leave>", self.on_canvas_leave)
+        
+        self.bind_wheel_zoom()
+        
+        self.canvas.bind("<Button-2>", self.on_middle_mouse_pressed)
+        self.canvas.bind("<B2-Motion>", self.on_middle_mouse_drag)
+        self.canvas.bind("<ButtonRelease-2>", self.on_middle_mouse_released)
+        
+        
+    def bind_wheel_zoom(self):
+        """Bind mouse wheel zoom events."""
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel_zoom)
+        self.canvas.bind("<Button-4>", self.on_mousewheel_zoom_linux)
+        self.canvas.bind("<Button-5>", self.on_mousewheel_zoom_linux)
+
+    def unbind_wheel_zoom(self):
+        """Temporarily disable mouse wheel zoom events."""
+        self.canvas.unbind("<MouseWheel>")
+        self.canvas.unbind("<Button-4>")
+        self.canvas.unbind("<Button-5>")
 
     def on_mouse_button_pressed(self, event):
         self.save_state()
-        self.start_x = self.end_x = self.canvas.canvasx(event.x)
-        self.start_y = self.end_y = self.canvas.canvasy(event.y)
+        
+        row, col = self.set_active_cell_from_event(event)
+        self.show_current_coordinates(row, col)
+        self.show_meter_coordinates(row, col)
+        self.show_cell_info(row, col)
+        self.update_hover_preview(row, col)
+
+        self.execute_selected_method()
+        
+    def on_mouse_button_pressed_motion(self, event):
+        row, col = self.set_active_cell_from_event(event)
+        self.show_current_coordinates(row, col)
+        self.show_meter_coordinates(row, col)
+        self.show_cell_info(row, col)        
+        self.update_hover_preview(row, col)
+
         self.execute_selected_method()
 
-
-
     def on_mouse_button_released(self, event):
-        self.end_x = self.canvas.canvasx(event.x)
-        self.end_y = self.canvas.canvasy(event.y)
+        pass
 
     def on_mouse_unpressed_motion(self, event):
-        self.show_current_coordinates(event)
-        self.show_meter_coordinates(event)
+        row, col = self.set_hover_cell_from_event(event)
+        self.show_current_coordinates(row, col)
+        self.show_meter_coordinates(row, col)
+        self.show_cell_info(row, col)
+        self.update_hover_preview(row, col)
         
+    def on_middle_mouse_pressed(self, event):
+        """
+        Start canvas panning with the middle mouse button.
+        """
+        # Cancel any zoom that was triggered a split-second before the pan click.
+        self._cancel_pending_zoom()
+        self.is_panning = True
+        self.zoom_block_until = time.monotonic() + 0.25
+        self.unbind_wheel_zoom()
+        self.canvas.config(cursor="fleur")
+        self.canvas.scan_mark(event.x, event.y)
+        return "break"
+
+    def on_middle_mouse_drag(self, event):
+        """
+        Continue canvas panning while the middle mouse button is held.
+        """
+        # Extend zoom suppression while panning to ignore stray wheel events.
+        self.zoom_block_until = time.monotonic() + 0.10
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+        return "break"
+
+    def on_middle_mouse_released(self, event):
+        """
+        Restore normal input behavior after panning.
+        """
+        self.is_panning = False
+        # Keep zoom blocked briefly after pan release to absorb delayed events.
+        self.zoom_block_until = time.monotonic() + 0.25
+        self.bind_wheel_zoom()
+        self.canvas.config(cursor="")
+        return "break"
+    
+    def on_canvas_leave(self, event):
+        self.hover_cell = None
+        self.backend.clear_hover_preview()
+        self.clear_cell_info()
+
+    def should_block_zoom(self, event=None):
+        """Return True when zoom events should be ignored around panning."""
+        if self.is_panning:
+            return True
+        if time.monotonic() < self.zoom_block_until:
+            return True
+        if event is not None and (event.state & 0x0200):
+            return True
+        return False
+
+    def _cancel_pending_zoom(self):
+        """Cancel a zoom that hasn't fired yet."""
+        if self._zoom_after_id is not None:
+            self.root.after_cancel(self._zoom_after_id)
+            self._zoom_after_id = None
+        self._zoom_pending_factor = 1.0
+        self._zoom_pending_anchor = (None, None)
+
+    def _schedule_zoom(self, factor, anchor_x, anchor_y):
+        """Delay zoom execution so a pan start within 100 ms can cancel it."""
+        if self._zoom_after_id is not None:
+            self.root.after_cancel(self._zoom_after_id)
+            self._zoom_pending_factor *= factor
+            # Keep the most-recent anchor position.
+            self._zoom_pending_anchor = (anchor_x, anchor_y)
+        else:
+            self._zoom_pending_factor = factor
+            self._zoom_pending_anchor = (anchor_x, anchor_y)
+        self._zoom_after_id = self.root.after(100, self._execute_pending_zoom)
+
+    def _execute_pending_zoom(self):
+        """Fire the accumulated zoom — unless panning started in the meantime."""
+        self._zoom_after_id = None
+        factor = self._zoom_pending_factor
+        ax, ay = self._zoom_pending_anchor
+        self._zoom_pending_factor = 1.0
+        self._zoom_pending_anchor = (None, None)
+        if self.is_panning or time.monotonic() < self.zoom_block_until:
+            return
+        if ax is not None:
+            self.backend.zoom(factor, ax, ay)
+        else:
+            self.backend.zoom(factor)
+
+    def on_mousewheel_zoom(self, event):
+        if self.should_block_zoom(event):
+            return "break"
+        anchor_x, anchor_y = self.get_mouse_canvas_position(event)
+        factor = 1.2 if event.delta > 0 else 0.8
+        self._schedule_zoom(factor, anchor_x, anchor_y)
+        return "break"  # Prevent default scrolling behavior
+            
+    def on_mousewheel_zoom_linux(self, event):
+        if self.should_block_zoom(event):
+            return "break"
+        
+        anchor_x, anchor_y = self.get_mouse_canvas_position(event)
+        if event.num == 4:
+            self._schedule_zoom(1.2, anchor_x, anchor_y)
+        elif event.num == 5:
+            self._schedule_zoom(0.8, anchor_x, anchor_y)
+        return "break"  # Prevent default scrolling behavior
+    
+    def get_mouse_canvas_position(self, event):
+        """Translate a Tk mouse event into canvas coordinates."""
+        return self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+
+    def get_mouse_cell(self, event):
+        canvas_x, canvas_y = self.get_mouse_canvas_position(event)
+        return self.backend.canvas_to_grid(canvas_x, canvas_y)
+    
+    def set_hover_cell_from_event(self, event):
+        self.hover_cell = self.get_mouse_cell(event)
+        return self.hover_cell
+    
+    def set_active_cell_from_event(self, event):
+        self.active_cell = self.get_mouse_cell(event)
+        return self.active_cell
 
 # ------------------ Extras ------------------
 
@@ -787,6 +967,7 @@ class PaintApplication(framework.Framework):
         self.update_height_legend_visibility()
         self.remove_options_from_top_bar()
         self.display_options_in_the_top_bar()
+        self.backend.clear_hover_preview()
         self.backend.update_grid(self.nx, self.ny, self.res)
 
     def set_landcover_view(self, event=None):
@@ -1295,11 +1476,22 @@ class PaintApplication(framework.Framework):
         
         
 if __name__ == '__main__':
-    # Ask the user for grid settings at startup
+    # Ask the user what should happen at startup
+    # - create new project with custom dimensions
+    # - load existing project from NetCDF file
     root = tk.Tk()
     root.withdraw()
-    nx, ny, res = welcome_screen.get_welcome_input(root)
+    welcome_result = welcome_screen.get_welcome_input(root)
     root.deiconify()
     root.title("PALMPaint")
-    app = PaintApplication(root, nx, ny, res)
+    if welcome_result[0] == "load":
+        _, file_path = welcome_result
+        print(f"Loading project from {file_path}")
+        # For loading, we initialize with dummy dimensions and resolution 
+        # these will be replaced when the file is loaded.
+        app = PaintApplication(root, 16, 16, 4)
+        app.load_project_netcdf_from_path(file_path)
+    else:
+        _, nx, ny, res = welcome_result
+        app = PaintApplication(root, nx, ny, res)
     root.mainloop()

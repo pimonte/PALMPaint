@@ -2,6 +2,15 @@
 /__pycache__
 /base/__pycache__
 quicksave
+quicksave*
 /palmpaint_venv
 /Files
 /Architektur_Idee.txt
+
+# Test & temporary files
+*.nc
+*.zip
+report.txt
+test
+testimctest
+Blitzprojekt_N03

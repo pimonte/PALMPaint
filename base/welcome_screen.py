@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, PhotoImage
+from tkinter import ttk, PhotoImage, filedialog
 import os
 
 class WelcomeForm(tk.Toplevel):
@@ -62,8 +62,17 @@ class WelcomeForm(tk.Toplevel):
         self.res_entry.grid(row=0, column=1, padx=5, pady=5)
 
         # Create the action button with updated text.
-        action_button = ttk.Button(container, text="Create New Static Driver Project", command=self.on_ok)
-        action_button.grid(row=4, column=0, columnspan=2, pady=15)
+        button_frame = ttk.Frame(container)
+        button_frame.grid(row=4, column=0, columnspan=2, pady=15)
+        
+        action_button = ttk.Button(button_frame, text="Create New Static Driver Project", command=self.on_ok)
+        action_button.grid(row=0, column=0, padx=5, pady=(0,10), sticky="ew")
+        
+        load_button = ttk.Button(button_frame, text="Load Existing Project", command=self.on_load_netcdf)
+        load_button.grid(row=1, column=0, padx=5, pady=(0,10), sticky="ew")
+        
+        #action_button = ttk.Button(container, text="Create New Static Driver Project", command=self.on_ok)
+        #action_button.grid(row=4, column=0, columnspan=2, pady=15)
 
         # Ensure closing the window sets default values.
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -90,12 +99,19 @@ class WelcomeForm(tk.Toplevel):
         except ValueError:
             res = self.default_res
 
-        self.result = (nx, ny, res)
+        #self.result = (nx, ny, res)
+        self.result = ("new", nx, ny, res)
         self.destroy()
+        
+    def on_load_netcdf(self):
+        file_path = filedialog.askopenfilename(title="Select NetCDF File", filetypes=[("NetCDF Files", "*.nc"), ("All Files", "*.*")])
+        if file_path:
+            self.result = ("load", file_path)
+            self.destroy()
 
     def on_close(self):
         # Use default values if the user closes the form.
-        self.result = (self.default_nx, self.default_ny, self.default_res)
+        self.result = ("new", self.default_nx, self.default_ny, self.default_res)
         self.destroy()
 
 def get_welcome_input(master, default_nx=16, default_ny=16, default_res=4, logo_path=None):

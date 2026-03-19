@@ -256,12 +256,32 @@ class GridModel:
         """Return a {(row, col): pixel_dict} mapping.
 
         Compatible with create_sd.Save() and report.generate_report().
+        All layer arrays are extracted in bulk via numpy before building
+        the dict, avoiding per-cell indexed accesses.
         """
-        data = {}
-        for row in range(self.ny):
-            for col in range(self.nx):
-                data[(row, col)] = self.get_pixel(row, col)
-        return data
+        zt_f   = self.zt.ravel().astype(float)
+        veg_f  = self.vegetation_type.ravel().astype(int)
+        soil_f = self.soil_type.ravel().astype(int)
+        pav_f  = self.pavement_type.ravel().astype(int)
+        wat_f  = self.water_type.ravel().astype(int)
+        bid_f  = self.building_id.ravel().astype(int)
+        bh_f   = self.building_height.ravel().astype(float)
+        bt_f   = self.building_type.ravel().astype(int)
+        wt_f   = self.water_pars[0].ravel().astype(float)
+        return {
+            (r, c): {
+                "zt":                float(zt_f[i]),
+                "vegetation_type":   int(veg_f[i]),
+                "soil_type":         int(soil_f[i]),
+                "pavement_type":     int(pav_f[i]),
+                "water_type":        int(wat_f[i]),
+                "building_id":       int(bid_f[i]),
+                "building_height":   float(bh_f[i]),
+                "building_type":     int(bt_f[i]),
+                "water_temperature": float(wt_f[i]),
+            }
+            for i, (r, c) in enumerate(np.ndindex(self.ny, self.nx))
+        }
 
     @classmethod
     def from_legacy_dict(cls, pixel_dict, nx, ny, res, surface_config=None):

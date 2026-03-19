@@ -36,6 +36,12 @@ class TkCanvasBackend:
         self.height_view_min = 0.0
         self.height_view_step = 1.0
         self.height_view_levels = 10
+        
+        self.hover_items = []
+        self.default_outline_color = "white"
+        self.hover_outline_color = "#ffd166"
+        self.hover_outline_width = 2
+        self.normal_outline_width = 1
         self._setup_canvas(root, nx, ny, res)
 
     # ------------------------------------------------------------------
@@ -66,6 +72,9 @@ class TkCanvasBackend:
             xscrollcommand=x_scroll.set, yscrollcommand=y_scroll.set
         )
 
+    def _get_base_outline_color(self):
+        return self.default_outline_color if self.show_grid_lines else ""
+    
     # ------------------------------------------------------------------
     # Grid drawing
     # ------------------------------------------------------------------
@@ -78,28 +87,32 @@ class TkCanvasBackend:
         if you need to wipe the canvas.
         """
         self.pixels = {}
-        outline_color = "white" if self.show_grid_lines else ""
+        outline_color = self._get_base_outline_color()
         for row in range(ny):
             for col in range(nx):
                 x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
                 rect = self.canvas.create_rectangle(
-                    x1, y1, x2, y2, fill="brown", outline=outline_color
+                    x1, y1, x2, y2, fill="brown", outline=outline_color, width=self.normal_outline_width
                 )
-                self.pixels[(row, col)] = {"id": rect, "outline": outline_color}
+                self.pixels[(row, col)] = {"id": rect, "outline": outline_color, "width": self.normal_outline_width}
                 
     def set_grid_lines_visible(self, visible):
-        """Show or hide grid cell outlines."""
         self.show_grid_lines = bool(visible)
-        outline_color = "white" if visible else ""
+        outline_color = self._get_base_outline_color()
 
         for pixel in self.pixels.values():
-            self.canvas.itemconfig(pixel["id"], outline=outline_color)
+            self.canvas.itemconfig(
+                pixel["id"],
+                outline=outline_color,
+                width=self.normal_outline_width,
+            )
             pixel["outline"] = outline_color
+            pixel["width"] = self.normal_outline_width
             
     def update_grid(self, nx, ny, res):
         """Redraw all canvas rectangles from the current model state."""
-        outline_color = "white" if self.show_grid_lines else ""
+        outline_color = self._get_base_outline_color()
         z_min = z_max = None
         if self.view_mode == "heightmap":
             z_min = self.height_view_min
@@ -122,15 +135,16 @@ class TkCanvasBackend:
 
                 if pixel_info is None:
                     rect = self.canvas.create_rectangle(
-                        x1, y1, x2, y2, fill=color, outline=outline_color
+                        x1, y1, x2, y2, fill=color, outline=outline_color, width=self.normal_outline_width
                     )
-                    self.pixels[(row, col)] = {"id": rect, "outline": outline_color}
+                    self.pixels[(row, col)] = {"id": rect, "outline": outline_color, "width": self.normal_outline_width}
                 else:
                     self.canvas.coords(pixel_info["id"], x1, y1, x2, y2)
                     self.canvas.itemconfig(
-                        pixel_info["id"], fill=color, outline=outline_color
+                        pixel_info["id"], fill=color, outline=outline_color, width=self.normal_outline_width
                     )
                     pixel_info["outline"] = outline_color
+                    pixel_info["width"] = self.normal_outline_width
 
     def update_pixel(self, row, col):
         """Refresh the fill colour of a single canvas rectangle."""
@@ -146,6 +160,29 @@ class TkCanvasBackend:
             ),
         )
 
+    def update_pixels(self, cells):
+        """Refresh fill colours for a batch of (row, col) cells.
+
+        All canvas itemconfig() calls are deferred to a single pass here
+        so callers can do all model mutations first and then update the view
+        in one sweep — much cheaper than calling update_pixel() per cell.
+        """
+        for row, col in cells:
+            pixel_info = self.pixels.get((row, col))
+            if pixel_info is None:
+                continue
+            self.canvas.itemconfig(
+                pixel_info["id"],
+                fill=self.model.get_color(
+                    row,
+                    col,
+                    view_mode=self.view_mode,
+                    z_min=self.height_view_min,
+                    z_step=self.height_view_step,
+                    levels=self.height_view_levels,
+                ),
+            )
+
     def set_view_mode(self, view_mode):
         """Set active display mode used for color lookup."""
         self.view_mode = view_mode
@@ -160,10 +197,105 @@ class TkCanvasBackend:
     # Zoom
     # ------------------------------------------------------------------
 
-    def zoom(self, factor):
-        """Scale all canvas objects and update the scroll region."""
-        self.canvas.scale("all", 0, 0, factor, factor)
+    def canvas_to_grid(self, canvas_x, canvas_y):
+        """Convert canvas coordinates to grid (row, col), correctly handling zoom.
+
+        Uses the actual current canvas geometry of cell (0, 0) as a reference so
+        results are correct regardless of how many times / how the view was zoomed.
+        """
+        if not self.pixels:
+            return 0, 0
+        x1, _y1, x2, y2 = self.canvas.coords(self.pixels[(0, 0)]["id"])
+        cell_size = x2 - x1
+        if cell_size <= 0:
+            return 0, 0
+        # x1 is the left edge of column 0; y2 is the bottom edge of row 0.
+        col = int((canvas_x - x1) / cell_size)
+        row = int((y2 - canvas_y) / cell_size)
+        return row, col
+
+    def zoom(self, factor, anchor_x=None, anchor_y=None):
+        """
+        Scale all canvas objects and update the scroll region.
+
+        If an anchor point is provided, zoom around that canvas position so the
+        point under the mouse stays visually stable. If no anchor is given,
+        fall back to the visible canvas center.
+        """
+        # Fallback: zoom around the visible center of the canvas.
+        if anchor_x is None or anchor_y is None:
+            widget_x = self.canvas.winfo_width() / 2
+            widget_y = self.canvas.winfo_height() / 2
+            anchor_x = self.canvas.canvasx(widget_x)
+            anchor_y = self.canvas.canvasy(widget_y)
+        else:
+            # Convert the anchor from canvas coordinates back to widget coordinates.
+            # We need the widget position later so we can restore the same visual
+            # mouse location after scaling.
+            widget_x = self.canvas.winfo_width() / 2
+            widget_y = self.canvas.winfo_height() / 2
+
+        # Remember where the anchor currently appears in widget coordinates.
+        before_x = self.canvas.canvasx(widget_x)
+        before_y = self.canvas.canvasy(widget_y)
+
+        # Scale everything around the chosen anchor point.
+        self.canvas.scale("all", anchor_x, anchor_y, factor, factor)
+
+        # Update the scroll region after scaling.
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
+
+        # After scaling, the canvas-to-widget mapping changed.
+        after_x = self.canvas.canvasx(widget_x)
+        after_y = self.canvas.canvasy(widget_y)
+
+        # Compute the drift introduced by zooming.
+        dx = after_x - before_x
+        dy = after_y - before_y
+
+        # Shift the view back so the anchor remains visually stable.
+        bbox = self.canvas.bbox(tk.ALL)
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            total_width = x2 - x1
+            total_height = y2 - y1
+
+            if total_width > 0:
+                left = self.canvas.canvasx(0) - dx
+                self.canvas.xview_moveto((left - x1) / total_width)
+
+            if total_height > 0:
+                top = self.canvas.canvasy(0) - dy
+                self.canvas.yview_moveto((top - y1) / total_height)
+                
+    # ------------------------------------------------------------------
+    # Hover effects
+    # ------------------------------------------------------------------
+    def clear_hover_preview(self):
+        """Remove all temporary hover overlay rectangles."""
+        for item_id in self.hover_items:
+            self.canvas.delete(item_id)
+        self.hover_items = []
+
+    def show_hover_preview(self, cells):
+        """Draw a hover outline overlay for a collection of grid cells."""
+        self.clear_hover_preview()
+
+        for row, col in cells:
+            pixel = self.pixels.get((row, col))
+            if pixel is None:
+                continue
+
+            x1, y1, x2, y2 = self.canvas.coords(pixel["id"])
+            hover_id = self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline=self.hover_outline_color,
+                width=self.hover_outline_width,
+                fill=""
+            )
+            self.hover_items.append(hover_id)
+            self.canvas.tag_raise(hover_id)
+
 
     # ------------------------------------------------------------------
     # Utility
@@ -173,3 +305,4 @@ class TkCanvasBackend:
         """Delete all canvas objects and reset the pixel registry."""
         self.canvas.delete("all")
         self.pixels = {}
+        self.hover_items = []
