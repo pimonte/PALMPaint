@@ -89,7 +89,7 @@ class TreeGeneratorDialog(tk.Toplevel):
 
     def __init__(self, parent: tk.Widget, on_apply_callback=None, get_resolution=None):
         super().__init__(parent)
-        self.title("Tree Generator")
+        self.title("Tree Generator (alpha)")
         self.resizable(True, True)
         self.on_apply_callback = on_apply_callback
         self._get_resolution = get_resolution  # callable () -> float, or None for 1.0
@@ -445,7 +445,7 @@ class TreeGeneratorDialog(tk.Toplevel):
 
         # Panel 1: vertical Z-X cross-section through y-centre
         img1 = lad[:, cy, :]  # (nz, nx)
-        self._axes[1].imshow(_masked(img1), origin="lower", aspect="auto",
+        self._axes[1].imshow(_masked(img1), origin="lower", aspect="equal",
                              cmap=cmap, norm=norm, interpolation="nearest", extent=ext_zx)
         self._axes[1].set_xlim(x_lim)
         self._axes[1].set_ylim(z_lim)
@@ -455,7 +455,7 @@ class TreeGeneratorDialog(tk.Toplevel):
 
         # Panel 2: vertical Z-Y cross-section through x-centre
         img2 = lad[:, :, cx]  # (nz, ny)
-        self._axes[2].imshow(_masked(img2), origin="lower", aspect="auto",
+        self._axes[2].imshow(_masked(img2), origin="lower", aspect="equal",
                              cmap=cmap, norm=norm, interpolation="nearest", extent=ext_zy)
         self._axes[2].set_xlim(y_lim)
         self._axes[2].set_ylim(z_lim)

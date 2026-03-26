@@ -255,27 +255,35 @@ class PaintApplication(framework.Framework):
     def single_tree(self):
         """Place a single resolved tree at the active cell using palm_extinction."""
         from base.tree_species import SHAPE_DEFAULT_K
+        self.update_single_tree_attributes()
+        self._on_shape_selected()
         row, col = self.active_cell
-        params = {
-            "max_tree_height":   self.selected_tree_height,
-            "crown_diameter":    self.selected_crown_diameter,
-            "trunk_diameter":    self.selected_trunk_diameter,
-            "crown_ratio":       self.selected_crown_ratio,
-            "crown_shape":       self.selected_crown_shape,
-            "alpha":             5.0,
-            "beta":              3.0,
-            "lai":               self.selected_lai,
-            "lad_model":         "palm_extinction",
-            "palm_extinction_k": SHAPE_DEFAULT_K.get(self.selected_crown_shape, 0.6),
-            "bad_lad_ratio":     self.selected_bad_lad_ratio,
-        }
+        # If the Tree Generator dialog was applied, use those params verbatim so
+        # that lad_max mode (and any other generator settings) are honoured.
+        if self._active_generator_params is not None:
+            gen_params = self._active_generator_params
+        else:
+            gen_params = {
+                "max_tree_height":   self.selected_tree_height,
+                "crown_diameter":    self.selected_crown_diameter,
+                "trunk_diameter":    self.selected_trunk_diameter,
+                "crown_ratio":       self.selected_crown_ratio,
+                "crown_shape":       self.selected_crown_shape,
+                "alpha":             5.0,
+                "beta":              3.0,
+                "lai":               self.selected_lai,
+                "lad_model":         "palm_extinction",
+                "palm_extinction_k": SHAPE_DEFAULT_K.get(self.selected_crown_shape, 0.6),
+                "bad_lad_ratio":     self.selected_bad_lad_ratio,
+            }
         self.model.add_tree(
             row, col,
             tree_height=self.selected_tree_height,
             crown_diameter=self.selected_crown_diameter,
             trunk_diameter=self.selected_trunk_diameter,
+            crown_height=self.selected_tree_height * self.selected_crown_ratio,
             lai=self.selected_lai,
-            generator_params=params,
+            generator_params=gen_params,
         )
         self.backend.redraw_tree_overlay()
 
@@ -313,66 +321,72 @@ class PaintApplication(framework.Framework):
         self.tree_ratio_var = tk.StringVar(value=str(self.selected_crown_ratio))
         sb = tk.Spinbox(self.top_bar, from_=0.1, to=5.0, increment=0.1, width=5,
                         textvariable=self.tree_ratio_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         # --- Crown diameter ---
         tk.Label(self.top_bar, text="Crown Diam.:").pack(side="left", padx=(6, 2))
         self.tree_crown_var = tk.StringVar(value=str(self.selected_crown_diameter))
         sb = tk.Spinbox(self.top_bar, from_=1.0, to=30.0, increment=inc, width=5,
                         textvariable=self.tree_crown_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         # --- Tree height ---
         tk.Label(self.top_bar, text="Tree Height:").pack(side="left", padx=(6, 2))
         self.tree_height_var = tk.StringVar(value=str(self.selected_tree_height))
         sb = tk.Spinbox(self.top_bar, from_=1.0, to=50.0, increment=inc, width=5,
                         textvariable=self.tree_height_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         # --- LAI ---
         tk.Label(self.top_bar, text="LAI:").pack(side="left", padx=(6, 2))
         self.tree_lai_var = tk.StringVar(value=str(self.selected_lai))
         sb = tk.Spinbox(self.top_bar, from_=0.1, to=20.0, increment=0.1, width=5,
                         textvariable=self.tree_lai_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         # --- BAD/LAD ratio ---
         tk.Label(self.top_bar, text="BAD/LAD:").pack(side="left", padx=(6, 2))
         self.tree_bad_var = tk.StringVar(value=str(self.selected_bad_lad_ratio))
         sb = tk.Spinbox(self.top_bar, from_=0.0, to=1.0, increment=0.005, width=6,
                         textvariable=self.tree_bad_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         # --- Trunk diameter ---
         tk.Label(self.top_bar, text="Trunk Diam.:").pack(side="left", padx=(6, 2))
         self.tree_trunk_var = tk.StringVar(value=str(self.selected_trunk_diameter))
         sb = tk.Spinbox(self.top_bar, from_=0.1, to=5.0, increment=0.05, width=5,
                         textvariable=self.tree_trunk_var,
-                        command=self.update_single_tree_attributes)
+                        command=self._refresh_single_tree_controls)
         sb.pack(side="left")
-        sb.bind("<FocusOut>", self.update_single_tree_attributes)
-        sb.bind("<Return>",   self.update_single_tree_attributes)
+        sb.bind("<FocusOut>", self._refresh_single_tree_controls)
+        sb.bind("<Return>",   self._refresh_single_tree_controls)
+        sb.bind("<KeyRelease>", self._refresh_single_tree_controls)
 
         ttk.Separator(self.top_bar, orient="vertical").pack(
             side="left", fill="y", padx=6, pady=2)
 
         ttk.Button(
-            self.top_bar, text="Tree Generator\u2026",
+            self.top_bar, text="Tree Generator (alpha)",
             command=self._open_tree_generator_dialog,
         ).pack(side="left", padx=(0, 4))
 
@@ -395,6 +409,8 @@ class PaintApplication(framework.Framework):
         name = self._tree_species_var.get()
         if name not in SPECIES_NAMES:
             return
+        # Selecting a species overrides any active generator preset.
+        self._active_generator_params = None
         sp = get_species(name)
         self.selected_crown_shape    = sp["crown_shape"]
         self.selected_crown_ratio    = sp["crown_ratio"]
@@ -414,6 +430,7 @@ class PaintApplication(framework.Framework):
             self.tree_trunk_var.set(str(sp["trunk_diameter"]))
         except AttributeError:
             pass
+        self._refresh_single_tree_preview()
 
     def _on_shape_selected(self, event=None):
         """Read shape combobox selection and update selected_crown_shape."""
@@ -422,6 +439,7 @@ class PaintApplication(framework.Framework):
             self.selected_crown_shape = int(label.split(" ")[0])
         except (ValueError, IndexError):
             pass
+        self._refresh_single_tree_preview()
 
     def _open_tree_generator_dialog(self):
         """Open (or show) the Tree Generator dialog (optional visual tool)."""
@@ -455,6 +473,9 @@ class PaintApplication(framework.Framework):
                     getattr(self, var_name).set(str(float(val)))
                 except AttributeError:
                     pass
+        # Store the full params dict so single_tree() can use it verbatim
+        # (e.g. lad_max mode, beta_density model, custom alpha/beta, etc.).
+        self._active_generator_params = dict(params_dict)
         shape = params_dict.get("crown_shape")
         if shape is not None:
             self.selected_crown_shape = int(shape)
@@ -463,6 +484,7 @@ class PaintApplication(framework.Framework):
                     SHAPE_LABELS.get(int(shape), "1 - Ellipsoid"))
             except AttributeError:
                 pass
+        self._refresh_single_tree_preview()
 
     def _clear_generator(self):
         """Reset to Default species parameters."""
@@ -484,6 +506,33 @@ class PaintApplication(framework.Framework):
             except (ValueError, AttributeError):
                 pass
         # Shape is read from the combobox via _on_shape_selected; no need to reparse here.
+
+    def _refresh_single_tree_preview(self):
+        """Refresh the single-tree hover preview when toolbar values change."""
+        if self.selected_tool_bar_function != "single_tree":
+            return
+        if self.hover_cell is None:
+            return
+        row, col = self.hover_cell
+        if 0 <= row < self.ny and 0 <= col < self.nx:
+            self.update_hover_preview(row, col)
+
+    def _refresh_single_tree_controls(self, event=None):
+        """Sync single-tree input fields and refresh the hover preview.
+
+        Any manual spinbox change discards the active generator preset so the
+        tool reverts to building params from the current spinbox values.
+        """
+        try:
+            float(self.tree_lai_var.get())
+        except (ValueError, AttributeError):
+            try:
+                self.tree_lai_var.set(str(self.selected_lai))
+            except AttributeError:
+                pass
+        self._active_generator_params = None
+        self.update_single_tree_attributes()
+        self._refresh_single_tree_preview()
 
     def _erase_tree_at(self, row, col):
         """Erase tree data at (row, col). Called by both right-click and right-drag."""
@@ -586,28 +635,42 @@ class PaintApplication(framework.Framework):
  # ------------------ File Menu Operations ------------------
     
     def new_project(self):
-        if not self.confirm_action("New Project", "Are you sure you want to start a new project? Unsaved work will be lost."):
+        if not self.confirm_discard_unsaved("New Project"):
             return
 
         result = welcome_screen.get_welcome_input(self.root)
         
         if result[0] == "load":
             _, file_path = result
-            self.load_project_netcdf(file_path)
+            self.load_project_netcdf_from_path(file_path)
             return
             
         _, new_nx, new_ny, new_res = result
-        self.backend.clear()
         self.nx = new_nx
         self.ny = new_ny
         self.original_res = new_res
-        self.res = new_res  
+        self.res = new_res
+        self.rescale_grid()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
 
         self.draw_grid(self.nx, self.ny, self.res)
         self.refresh_project_info_labels()
         
-    def confirm_action(self, title, message):
-        return tk.messagebox.askyesno(title, message)
+    def confirm_discard_unsaved(self, action_name):
+        """Ask for confirmation only when the current project has unsaved changes."""
+        if not self.dirty:
+            return True
+        return tk.messagebox.askyesno(
+            action_name,
+            "You have unsaved changes. Continue and discard them?",
+        )
+
+    def exit_application(self):
+        """Close the application, warning first if the project is dirty."""
+        if not self.confirm_discard_unsaved("Exit"):
+            return
+        self.root.destroy()
         
         
     def _resolved_vegetation_for_save(self):
@@ -617,32 +680,148 @@ class PaintApplication(framework.Framework):
             return rv
         return {k: (None if k == "bad" else v) for k, v in rv.items()}
 
-    def save_netcdf(self):
+    def _save_project_to_file(self, filename="quicksave"):
+        """Persist the current project to a NetCDF file."""
         Save(
             self.model.to_legacy_dict(),
             self.original_res,
             self.origin,
             self.surface_config,
+            filename,
             tree_instances=self.model.tree_instances,
             resolved_vegetation=self._resolved_vegetation_for_save(),
-            )
+        )
+        self.dirty = False
+
+    def save_netcdf(self, event=None):
+        self._save_project_to_file()
         
-    def save_as_netcdf(self):
+    def save_as_netcdf(self, event=None):
         file_path = fd.asksaveasfilename(
             defaultextension="",
             filetypes=[("All files", "*"), ("NetCDF files", "*.nc") ]
         )
         if not file_path:
             return
-        Save(
-            self.model.to_legacy_dict(), 
-            self.original_res, 
-            self.origin, 
-            self.surface_config,
-            file_path,
-            tree_instances=self.model.tree_instances,
-            resolved_vegetation=self._resolved_vegetation_for_save(),
-            )
+        self._save_project_to_file(file_path)
+
+    def _autosave_filename(self, slot):
+        """Return the autosave path for the given rotation slot."""
+        return os.path.join(os.getcwd(), f"autosave_{slot + 1}.nc")
+
+    def _schedule_autosave(self):
+        """Schedule the next autosave tick based on the current settings."""
+        if self._autosave_after_id is not None:
+            self.root.after_cancel(self._autosave_after_id)
+            self._autosave_after_id = None
+
+        if self.autosave_file_count <= 0 or self.autosave_interval_ms <= 0:
+            return
+
+        self._autosave_after_id = self.root.after(
+            self.autosave_interval_ms,
+            self._run_autosave,
+        )
+
+    def _run_autosave(self):
+        """Write an autosave snapshot if the project changed since the last save."""
+        self._autosave_after_id = None
+
+        try:
+            if self.dirty and self.autosave_file_count > 0:
+                filename = self._autosave_filename(self._autosave_next_slot)
+                self._save_project_to_file(filename)
+                self._autosave_next_slot = (
+                    self._autosave_next_slot + 1
+                ) % self.autosave_file_count
+        except Exception as exc:
+            print(f"Autosave failed: {exc}")
+        finally:
+            self._schedule_autosave()
+
+    def open_autosave_settings(self):
+        """Open a small dialog to configure autosave interval and rotation size."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Autosave Settings")
+        dialog.geometry("360x220")
+        dialog.resizable(False, False)
+
+        tk.Label(
+            dialog,
+            text="Autosave writes rotating NetCDF snapshots in the project folder.",
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        tk.Label(
+            dialog,
+            text=f"Folder: {os.getcwd()}",
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 10))
+
+        interval_minutes = max(1, self.autosave_interval_ms // 60000)
+        interval_var = tk.StringVar(value=str(interval_minutes))
+        file_count_var = tk.StringVar(value=str(self.autosave_file_count))
+
+        form = tk.Frame(dialog)
+        form.pack(fill="x", padx=12, pady=4)
+
+        tk.Label(form, text="Interval (minutes):").grid(row=0, column=0, sticky="w", pady=4)
+        tk.Entry(form, textvariable=interval_var, width=8).grid(row=0, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Autosave files:").grid(row=1, column=0, sticky="w", pady=4)
+        tk.Entry(form, textvariable=file_count_var, width=8).grid(row=1, column=1, sticky="w", pady=4)
+
+        tk.Label(
+            dialog,
+            text="Set files to 0 to disable autosave. Larger values use more disk space.",
+            wraplength=320,
+            justify="left",
+            fg="gray",
+        ).pack(anchor="w", padx=12, pady=(8, 10))
+
+        def apply_settings():
+            try:
+                minutes = int(interval_var.get())
+                file_count = int(file_count_var.get())
+            except ValueError:
+                tk.messagebox.showerror(
+                    "Invalid Input",
+                    "Please enter whole numbers for minutes and autosave files.",
+                )
+                return
+
+            if minutes < 1:
+                tk.messagebox.showerror(
+                    "Invalid Input",
+                    "The autosave interval must be at least 1 minute.",
+                )
+                return
+            if file_count < 0:
+                tk.messagebox.showerror(
+                    "Invalid Input",
+                    "The number of autosave files cannot be negative.",
+                )
+                return
+
+            self.autosave_interval_ms = minutes * 60 * 1000
+            self.autosave_file_count = file_count
+            if self.autosave_file_count > 0:
+                self._autosave_next_slot %= self.autosave_file_count
+            else:
+                self._autosave_next_slot = 0
+            self._schedule_autosave()
+            dialog.destroy()
+
+        button_row = tk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=8)
+        tk.Button(button_row, text="Save", command=apply_settings).pack(side="left")
+        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=8)
+
+        dialog.grab_set()
+        dialog.wait_window()
+
     def load_project_netcdf_from_path(self, file_path):
         if not file_path:
             return  # No file path provided
@@ -670,21 +849,28 @@ class PaintApplication(framework.Framework):
                 self.model.next_tree_id = max_id + 1
         self.backend.model = self.model
         self.rescale_grid()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
         
         self.backend.clear()
         self.backend.clear_hover_preview()
+        self.backend.draw_grid(self.nx, self.ny, self.res)
         self.backend.update_grid(self.nx, self.ny, self.res)
         self.backend.set_grid_lines_visible(self.show_grid_lines)
+
         
         self.refresh_project_info_labels()
+        self.dirty = False
         
         print(f"Loaded NetCDF project from {file_path}")
             
-    def load_project_netcdf(self):
+    def load_project_netcdf(self, event=None):
         """
         Open a file dialog to let the user choose a NetCDF project file,
         then load it using load_sd.Load() and update the canvas.
         """
+        if not self.confirm_discard_unsaved("Load Project"):
+            return
         file_path = fd.askopenfilename(
             defaultextension="",
             filetypes=[("All files", "*"), ("NetCDF files", "*.nc")]
@@ -695,24 +881,41 @@ class PaintApplication(framework.Framework):
     
     def save_state(self):
         self.undo_stack.append(copy.deepcopy(self.model))
+        self.redo_stack.clear()
+        self.dirty = True
+
+    def _capture_canvas_view(self):
+        """Return the current canvas view fractions."""
+        return self.canvas.xview()[0], self.canvas.yview()[0]
+
+    def _restore_canvas_view(self, xview, yview):
+        """Restore a previously captured canvas view."""
+        self.canvas.xview_moveto(xview)
+        self.canvas.yview_moveto(yview)
         
     def undo(self, event=None):
         if self.undo_stack:
+            xview, yview = self._capture_canvas_view()
             state = self.undo_stack.pop()
             self.redo_stack.append(copy.deepcopy(self.model))
             self.model = state
             self.backend.model = self.model
             self.backend.update_grid(self.nx, self.ny, self.res)
+            self._restore_canvas_view(xview, yview)
+            self.dirty = True
         else:
             print("Nothing to undo.")
 
     def redo(self, event=None):
         if self.redo_stack:
+            xview, yview = self._capture_canvas_view()
             state = self.redo_stack.pop()
             self.undo_stack.append(copy.deepcopy(self.model))
             self.model = state
             self.backend.model = self.model
             self.backend.update_grid(self.nx, self.ny, self.res)
+            self._restore_canvas_view(xview, yview)
+            self.dirty = True
         else:
             print("Nothing to redo.")
 
@@ -780,6 +983,10 @@ class PaintApplication(framework.Framework):
         self.selected_crown_ratio     = 1.0   # crown_height / crown_diameter
         self.selected_bad_lad_ratio   = 0.5
         self.bad_enabled              = True  # write BAD field to output
+        # Full params_dict from the Tree Generator dialog, if the user last clicked
+        # "Apply to Brush".  Used verbatim as generator_params in single_tree().
+        # Reset to None when the user picks a species or clears the generator.
+        self._active_generator_params = None
 
         # Tree Generator dialog (optional visual tool)
         self._tree_gen_dialog = None               # lazy-created Toplevel singleton
@@ -792,6 +999,12 @@ class PaintApplication(framework.Framework):
 
         self.undo_stack = []
         self.redo_stack = []
+        self.dirty = False
+
+        self.autosave_interval_ms = 2 * 60 * 1000
+        self.autosave_file_count = 3
+        self._autosave_next_slot = 0
+        self._autosave_after_id = None
         
         self.active_cell = None
         self.hover_cell = None
@@ -803,6 +1016,8 @@ class PaintApplication(framework.Framework):
         self.backend.draw_grid(self.nx, self.ny, self.res,)
         self.bind_mouse()
         self.bind_shortcuts()
+        self.root.protocol("WM_DELETE_WINDOW", self.exit_application)
+        self._schedule_autosave()
         
     # ------------------ Initialize Grid ------------------    
 
@@ -813,6 +1028,7 @@ class PaintApplication(framework.Framework):
         self.backend.clear()
         self.backend.draw_grid(nx, ny, res)
         self.backend.set_grid_lines_visible(self.show_grid_lines)
+        self.dirty = False
 
     def update_grid(self, nx, ny, res):
         """Redraw all canvas pixels from the current model state."""
@@ -1072,10 +1288,19 @@ class PaintApplication(framework.Framework):
         tree_info = self.model.get_tree_info_at(row, col)
         if tree_info is not None:
             max_z = tree_info["max_height"]
+            lines.append("")
+            lines.append("Tree")
+            lines.append("----")
             lines.append(f"tree height: {max_z:.1f} m" if max_z is not None else "tree height: -")
-            lines.append(f"lad: {tree_info['lad']:.4f} m²/m³")
-            bad = tree_info["bad"]
-            lines.append(f"bad: {bad:.4f} m²/m³" if bad is not None else "bad: -")
+            lines.append(f"col LAD max: {tree_info['lad_max']:.4f} m²/m³")
+            lines.append(f"col. LAI: {tree_info['lad_integral']:.4f} m²/m²")
+            bad_max = tree_info["bad_max"]
+            bad_integral = tree_info["bad_integral"]
+            lines.append(f"col. BAD max: {bad_max:.4f} m²/m³" if bad_max is not None else "bad max: -")
+            lines.append(
+                f"col. BAD: {bad_integral:.4f} m²/m²"
+                if bad_integral is not None else "cell ∫ BAI: -"
+            )
             tid = tree_info["tree_id"]
             lines.append(f"tree id: {tid}" if tid > 0 else "tree id: -")
 
@@ -1254,6 +1479,7 @@ class PaintApplication(framework.Framework):
         self._zoom_pending_anchor = (None, None)
         if self.is_panning or time.monotonic() < self.zoom_block_until:
             return
+        self.res *= factor
         if ax is not None:
             self.backend.zoom(factor, ax, ay)
         else:
@@ -1299,11 +1525,11 @@ class PaintApplication(framework.Framework):
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         menu_definitions = (
-            'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save NetCDF as ...//self.save_as_netcdf, sep,'+
-            'Load from NetCDF//self.load_project_netcdf, sep, Exit//self.root.quit',
+            'File - New Project//self.new_project, Save to NetCDF/Ctrl+S/self.save_netcdf, Save NetCDF as .../Ctrl+Shift+S/self.save_as_netcdf, sep,'+
+            'Load from NetCDF//self.load_project_netcdf, sep, Exit//self.exit_application',
             'View- Landcover View//self.set_landcover_view, Heightmap View//self.set_heightmap_view, Soil View//self.set_soil_view, sep, Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out, Toggle Gridlines/Ctrl+G/self.toggle_gridlines, Toggle Tree Overlay/Ctrl+T/self.toggle_tree_overlay',
             'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
-            'Extras - Generate Report//self.generate_report, Change Origin//self.change_origin',
+            'Extras - Autosave Settings//self.open_autosave_settings, Generate Report//self.generate_report, Change Origin//self.change_origin',
         )
         self.build_menu(menu_definitions)
 
@@ -1330,6 +1556,8 @@ class PaintApplication(framework.Framework):
     def bind_shortcuts(self):
         self.root.bind("<Control-Up>", self.canvas_zoom_in)
         self.root.bind("<Control-Down>", self.canvas_zoom_out)
+        self.root.bind("<Control-s>", self.save_netcdf)
+        self.root.bind("<Control-S>", self.save_as_netcdf)
         self.root.bind("<Control-z>", self.undo)
         self.root.bind("<Control-y>", self.redo)
         self.root.bind("<Control-g>", self.toggle_gridlines)
@@ -1818,6 +2046,7 @@ class PaintApplication(framework.Framework):
                 y = float(entries[3].get())
 
                 self.origin = (lat, lon, x, y)
+                self.dirty = True
                 dialog.destroy()
 
                 tk.messagebox.showinfo("Origin Updated",

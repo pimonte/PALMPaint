@@ -3,6 +3,7 @@ from tkinter import Toplevel
 from tkinter import filedialog
 from tkinter import messagebox
 from datetime import datetime
+from base.gridmodel import GridModel
 
 def format_value(value, width=10):
     """Ensures integers and floats are aligned correctly."""
@@ -77,10 +78,7 @@ def generate_report(root, pixels, nx, ny, dxy, ori, resolved_vegetation=None, tr
         import numpy as _np
 
         # dz: spacing between zlad levels (uniform assumed)
-        if zlad is not None and len(zlad) > 1:
-            dz = float(zlad[1] - zlad[0])
-        else:
-            dz = float(dxy)  # fallback
+        dz = GridModel.infer_dz_from_zlad(zlad, dxy)
 
         cell_area = float(dxy) ** 2  # m²
 

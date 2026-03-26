@@ -8,6 +8,20 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.4.1-alpha] — dev branch (unreleased)
+
+### Added
+- Autosave: project is periodically saved to rotating autosave slots; slot count and interval are configurable via the autosave options dialog
+- Keyboard shortcuts for Save (`Ctrl+S`) and Save As (`Ctrl+Shift+S`)
+
+### Changed
+- Improved single-tree canvas representation: overlay cells now use a clearly inset rectangle with Beer-Lambert stipple shading so they are visually distinct from the grid lines at all zoom levels
+
+### Fixed
+- Several bugs in the Tree Generator (crown geometry edge cases and generator preset handling)
+
+---
+
 ## [0.4.0-alpha] — dev branch (unreleased)
 
 ### Added

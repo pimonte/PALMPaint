@@ -26,6 +26,26 @@ class GridModel:
     INT_FILL   = -127
     FLOAT_FILL = -9999.0
 
+    @staticmethod
+    def infer_dz_from_zlad(zlad, fallback):
+        """Infer a representative vertical spacing from a zlad coordinate array.
+
+        Some external files contain a leading zero followed by regularly spaced
+        layer coordinates (for example ``0, 2, 6, 10, ...``). Using only the
+        first difference would underestimate dz in that case, so we use the
+        median positive spacing instead.
+        """
+        if zlad is None:
+            return float(fallback)
+        zlad = np.asarray(zlad, dtype=np.float32)
+        if zlad.size < 2:
+            return float(fallback)
+        diffs = np.diff(zlad)
+        diffs = diffs[np.isfinite(diffs) & (diffs > 0.0)]
+        if diffs.size == 0:
+            return float(fallback)
+        return float(np.median(diffs))
+
     def __init__(self, nx, ny, res, surface_config=None):
         """
         Parameters
@@ -169,10 +189,12 @@ class GridModel:
         """Return a dict with tree diagnostics for (row, col), or None if no lad.
 
         Keys:
-          max_height  – z-coordinate (m) of the highest lad > 0 level, or None
-          lad         – sum of lad values across all z-levels (m²/m³ · m column)
-          bad         – sum of bad values, or None if bad array is absent
-          tree_id     – integer tree ID (0 = no ID / loaded-only cell)
+          max_height    – z-coordinate (m) of the highest lad > 0 level, or None
+          lad_max       – maximum LAD in the column (m²/m³)
+          lad_integral  – vertical integral sum(LAD * dz) for the column (m²/m²)
+          bad_max       – maximum BAD in the column (m²/m³), or None if absent
+          bad_integral  – vertical integral sum(BAD * dz) (m²/m²), or None if absent
+          tree_id       – integer tree ID (0 = no ID / loaded-only cell)
         """
         rv = self.resolved_vegetation
         lad_vol = rv.get("lad") if rv else None
@@ -183,19 +205,26 @@ class GridModel:
         zlad = rv.get("zlad")
         nz_idx = np.where(col_lad > 0)[0]
         max_height = float(zlad[nz_idx[-1]]) if (zlad is not None and nz_idx.size > 0) else None
+        dz = self.infer_dz_from_zlad(zlad, self.res)
+        positive_lad = col_lad[col_lad > 0]
 
         bad_vol = rv.get("bad")
         if bad_vol is not None:
             col_bad = bad_vol[:, row, col]
-            total_bad = float(col_bad[col_bad > 0].sum())
+            positive_bad = col_bad[col_bad > 0]
+            bad_max = float(positive_bad.max()) if positive_bad.size > 0 else 0.0
+            bad_integral = float(positive_bad.sum() * dz)
         else:
-            total_bad = None
+            bad_max = None
+            bad_integral = None
 
         return {
-            "max_height": max_height,
-            "lad":        float(col_lad[col_lad > 0].sum()),
-            "bad":        total_bad,
-            "tree_id":    self.get_tree_id_at(row, col),
+            "max_height":   max_height,
+            "lad_max":      float(positive_lad.max()) if positive_lad.size > 0 else 0.0,
+            "lad_integral": float(positive_lad.sum() * dz),
+            "bad_max":      bad_max,
+            "bad_integral": bad_integral,
+            "tree_id":      self.get_tree_id_at(row, col),
         }
 
     def remove_loaded_lad_at(self, row, col):
