@@ -10,6 +10,7 @@ modifies it — all data changes go through the GridModel.
 """
 
 import tkinter as tk
+import numpy as np
 
 
 class TkCanvasBackend:
@@ -30,6 +31,9 @@ class TkCanvasBackend:
 
     def __init__(self, root, model, nx, ny, res):
         self.model  = model
+        self.nx = nx
+        self.ny = ny
+        self.res = res
         self.pixels = {}   # {(row, col): {"id": canvas_id, "outline": colour}}
         self.show_grid_lines = True
         self.view_mode = "landcover"
@@ -43,6 +47,11 @@ class TkCanvasBackend:
         self.hover_outline_width = 2
         self.normal_outline_width = 1
         self._setup_canvas(root, nx, ny, res)
+        
+        self.tree_overlay_items = []
+        self.tree_overlay_color = "#0b5d1e"
+        self.tree_overlay_width = 1
+        self.show_tree_overlay = True
 
     # ------------------------------------------------------------------
     # Canvas setup
@@ -86,6 +95,9 @@ class TkCanvasBackend:
         Existing canvas objects are NOT deleted here — call clear() first
         if you need to wipe the canvas.
         """
+        self.nx = nx
+        self.ny = ny
+        self.res = res
         self.pixels = {}
         outline_color = self._get_base_outline_color()
         for row in range(ny):
@@ -96,7 +108,8 @@ class TkCanvasBackend:
                     x1, y1, x2, y2, fill="brown", outline=outline_color, width=self.normal_outline_width
                 )
                 self.pixels[(row, col)] = {"id": rect, "outline": outline_color, "width": self.normal_outline_width}
-                
+        self.redraw_tree_overlay()  
+            
     def set_grid_lines_visible(self, visible):
         self.show_grid_lines = bool(visible)
         outline_color = self._get_base_outline_color()
@@ -112,6 +125,9 @@ class TkCanvasBackend:
             
     def update_grid(self, nx, ny, res):
         """Redraw all canvas rectangles from the current model state."""
+        self.nx = nx
+        self.ny = ny
+        self.res = res
         outline_color = self._get_base_outline_color()
         z_min = z_max = None
         if self.view_mode == "heightmap":
@@ -145,7 +161,9 @@ class TkCanvasBackend:
                     )
                     pixel_info["outline"] = outline_color
                     pixel_info["width"] = self.normal_outline_width
-
+        self.redraw_tree_overlay()
+        
+        
     def update_pixel(self, row, col):
         """Refresh the fill colour of a single canvas rectangle."""
         self.canvas.itemconfig(
@@ -295,6 +313,55 @@ class TkCanvasBackend:
             )
             self.hover_items.append(hover_id)
             self.canvas.tag_raise(hover_id)
+            
+    # ------------------------------------------------------------------
+    # Tree overlay
+    # ------------------------------------------------------------------
+    def clear_tree_overlay(self):
+        for item_id in self.tree_overlay_items:
+            self.canvas.delete(item_id)
+        self.tree_overlay_items = []
+        
+    def set_tree_overlay_visible(self, visible):
+        self.show_tree_overlay = visible
+        if visible:
+            self.redraw_tree_overlay()
+        else:
+            self.clear_tree_overlay()
+
+    def redraw_tree_overlay(self):
+        self.clear_tree_overlay()
+        if not self.show_tree_overlay:
+            return
+
+        rv = getattr(self.model, "resolved_vegetation", None)
+        if not rv:
+            return
+
+        tree_id = rv.get("tree_id")
+        lad = rv.get("lad")
+
+        if lad is not None and np.any(lad > 0):
+            mask2d = np.any(lad > 0, axis=0)
+        elif tree_id is not None and np.any(tree_id > 0):
+            mask2d = np.any(tree_id > 0, axis=0)
+        else:
+            return
+        rows, cols = np.where(mask2d)
+
+        for row, col in zip(rows, cols):
+            pixel = self.pixels.get((row, col))
+            if pixel is None:
+                continue
+            x1, y1, x2, y2 = self.canvas.coords(pixel["id"])
+            item = self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline=self.tree_overlay_color,
+                width=self.tree_overlay_width,
+                fill="",
+            )
+            self.tree_overlay_items.append(item)
+            self.canvas.tag_raise(item)
 
 
     # ------------------------------------------------------------------
@@ -306,3 +373,4 @@ class TkCanvasBackend:
         self.canvas.delete("all")
         self.pixels = {}
         self.hover_items = []
+        self.clear_tree_overlay()

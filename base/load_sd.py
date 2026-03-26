@@ -13,7 +13,8 @@ def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
     if var_name in nc_file.variables:
         data = nc_file.variables[var_name][:]
         if hasattr(data, "filled"):
-            data = data.filled(nc_file.variables[var_name]._FillValue)
+            fv = getattr(nc_file.variables[var_name], "_FillValue", fill_value)
+            data = data.filled(fv)
         if dtype is not None:
             data = data.astype(dtype)
         return data
@@ -23,6 +24,27 @@ def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
         fill_value,
         dtype=dtype if dtype is not None else np.float32
     )
+    
+def get_3d_data(nc_file, var_name, ny, nx, dtype=None):
+    """Load a 3D variable (__, y, x) or return None."""
+    if var_name not in nc_file.variables:
+        return None
+
+    data = nc_file.variables[var_name][:]
+    if hasattr(data, "filled"):
+        fv = getattr(nc_file.variables[var_name], "_FillValue", -9999.0)
+        data = data.filled(fv)
+
+    if dtype is not None:
+        data = data.astype(dtype)
+
+    if data.ndim != 3:
+        return None
+
+    if data.shape[1] != ny or data.shape[2] != nx:
+        return None
+
+    return data
 
 
 def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np.float32):
@@ -30,7 +52,8 @@ def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np
     if var_name in nc_file.variables:
         data = nc_file.variables[var_name][:]
         if hasattr(data, "filled"):
-            data = data.filled(nc_file.variables[var_name]._FillValue)
+            fv = getattr(nc_file.variables[var_name], "_FillValue", fill_value)
+            data = data.filled(fv)
         return data.astype(dtype)
 
     return np.full((npars, ny, nx), fill_value, dtype=dtype)
@@ -58,8 +81,12 @@ def Load(filename="output.nc"):
         # Get dimensions
         nx = len(nc_file.dimensions["x"])
         ny = len(nc_file.dimensions["y"])
-        ori = [nc_file.origin_lat, nc_file.origin_lon,
-               nc_file.origin_x, nc_file.origin_y]
+        ori = [
+            getattr(nc_file, "origin_lat", 52.50965),
+            getattr(nc_file, "origin_lon", 13.3139),
+            getattr(nc_file, "origin_x", 3455249.0),
+            getattr(nc_file, "origin_y", 5424815.0),
+        ]
 
         # Determine resolution from the x coordinate variable.
         # The x values are defined as: np.arange(0, nx*dx, dx) + 0.5*dx in create_sd.py
@@ -70,7 +97,8 @@ def Load(filename="output.nc"):
             if var_name in nc_file.variables:
                 var = nc_file.variables[var_name][:]
                 if hasattr(var, "filled"):
-                    return var.filled(nc_file.variables[var_name]._FillValue)
+                    fv = getattr(nc_file.variables[var_name], "_FillValue", -127)
+                    return var.filled(fv)
                 return var
             return np.full((ny, nx), -127)
 
@@ -79,14 +107,35 @@ def Load(filename="output.nc"):
         soil = get_2d_data(nc_file, "soil_type", ny, nx, fill_value=-127, dtype=np.int8)
         pav = get_2d_data(nc_file, "pavement_type", ny, nx, fill_value=-127, dtype=np.int8)
         water = get_2d_data(nc_file, "water_type", ny, nx, fill_value=-127, dtype=np.int8)
-        bldg_id = get_2d_data(nc_file, "building_id", ny, nx, fill_value=-127, dtype=np.int16)
+        bldg_id = get_2d_data(nc_file, "building_id", ny, nx, fill_value=-127, dtype=np.int32)
         bldg_height = get_2d_data(nc_file, "buildings_2d", ny, nx, fill_value=-9999.0, dtype=np.float32)
         bldg_type = get_2d_data(nc_file, "building_type", ny, nx, fill_value=-127, dtype=np.int8)
         zt = get_2d_data(nc_file, "zt", ny, nx, fill_value=0.0, dtype=np.float32)
 
         # --- parameter stacks / pars ---
         water_pars = get_pars_data(nc_file, "water_pars", 7, ny, nx, fill_value=-9999.0, dtype=np.float32)
+        zlad = None
+        if "zlad" in nc_file.variables:
+            zlad = nc_file.variables["zlad"][:]
+            if hasattr(zlad, "filled"):
+                fv = getattr(nc_file.variables["zlad"], "_FillValue", -9999.0)
+                zlad = zlad.filled(fv)
+            zlad = zlad.astype(np.float32)
 
+        lad = get_3d_data(nc_file, "lad", ny, nx, dtype=np.float32)
+        bad = get_3d_data(nc_file, "bad", ny, nx, dtype=np.float32)
+        tree_id = get_3d_data(nc_file, "tree_id", ny, nx, dtype=np.int32)
+
+        resolved_vegetation = {
+            "zlad": zlad,
+            "lad": lad,
+            "bad": bad,
+            "tree_id": tree_id,
+        }
+        
+        
+        
+        
         grid = {}
         for row in range(ny):
             for col in range(nx):
@@ -103,5 +152,5 @@ def Load(filename="output.nc"):
                     "water_temperature": float(water_pars[0, row, col]),
                 }
 
-    return grid, nx, ny, res, ori
+    return grid, nx, ny, res, ori, resolved_vegetation
 

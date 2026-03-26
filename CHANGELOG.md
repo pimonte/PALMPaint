@@ -8,6 +8,24 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.4.0-alpha] — dev branch (unreleased)
+
+### Added
+- Single-tree tool: place resolved 3-D trees directly on the canvas (left-click = place, right-click = remove)
+- `tree_generator_core.py`: LAD field generation using crown shapes and extinction model similar to palm_csd
+- `tree_generator_dialog.py`: interactive Tree Generator dialog with live matplotlib preview and preset save/load
+- `tree_species.py`: built-in catalog of ~90 tree species with default geometry (crown shape, height, LAI, BAD/LAD ratio, trunk diameter) from PALM documentation
+- Species selector and shape combobox in the single-tree tool bar
+- Support for 6 crown shapes (Spherical, Cylindrical, Conical, Inv. Conical, Paraboloid, Inv. Paraboloid)
+- BAD (Basal Area Density) output toggle ("Write BAD" checkbox)
+- `GridModel.tree_instances`: list of editable per-tree objects with id, position, and geometry
+- `GridModel.resolved_vegetation`: 3D LAD/BAD/tree_id/zlad arrays rebuilt from `tree_instances`
+- `GridModel._loaded_rv`: immutable base layer preserving vegetation loaded from existing NetCDF files
+- `GridModel.remove_loaded_lad_at()`: cell-level removal of externally-loaded vegetation without a tree instance
+- NetCDF read/write for `lad`, `bad`, `tree_id`, and `zlad` variables in `load_sd` and `create_sd`
+
+### Bugfix
+- The report now displays the correct building heights
 
 ## [0.3.0-alpha] — dev branch (unreleased)
 

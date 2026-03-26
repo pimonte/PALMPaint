@@ -104,7 +104,7 @@ class WelcomeForm(tk.Toplevel):
         self.destroy()
         
     def on_load_netcdf(self):
-        file_path = filedialog.askopenfilename(title="Select NetCDF File", filetypes=[("NetCDF Files", "*.nc"), ("All Files", "*.*")])
+        file_path = filedialog.askopenfilename(title="Select NetCDF File", filetypes=[("All Files", "*"), ("NetCDF Files", "*.nc")])
         if file_path:
             self.result = ("load", file_path)
             self.destroy()

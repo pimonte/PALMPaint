@@ -45,7 +45,7 @@ class PaintApplication(framework.Framework):
     
 
     tool_bar_functions = (
-        "vegetation", "pavement", "water", "building")
+        "vegetation", "pavement", "water", "building", "single_tree")
     height_tool_bar_functions = ("zt_set", "zt_raise", "zt_lower")
     soil_tool_bar_functions = ()
     selected_tool_bar_function = tool_bar_functions[0]
@@ -252,6 +252,280 @@ class PaintApplication(framework.Framework):
             building_type=self.building_type,
         ))
 
+    def single_tree(self):
+        """Place a single resolved tree at the active cell using palm_extinction."""
+        from base.tree_species import SHAPE_DEFAULT_K
+        row, col = self.active_cell
+        params = {
+            "max_tree_height":   self.selected_tree_height,
+            "crown_diameter":    self.selected_crown_diameter,
+            "trunk_diameter":    self.selected_trunk_diameter,
+            "crown_ratio":       self.selected_crown_ratio,
+            "crown_shape":       self.selected_crown_shape,
+            "alpha":             5.0,
+            "beta":              3.0,
+            "lai":               self.selected_lai,
+            "lad_model":         "palm_extinction",
+            "palm_extinction_k": SHAPE_DEFAULT_K.get(self.selected_crown_shape, 0.6),
+            "bad_lad_ratio":     self.selected_bad_lad_ratio,
+        }
+        self.model.add_tree(
+            row, col,
+            tree_height=self.selected_tree_height,
+            crown_diameter=self.selected_crown_diameter,
+            trunk_diameter=self.selected_trunk_diameter,
+            lai=self.selected_lai,
+            generator_params=params,
+        )
+        self.backend.redraw_tree_overlay()
+
+    def single_tree_options(self):
+        """Display species selector and tree parameter spinboxes in the top bar."""
+        from base.tree_species import SPECIES_NAMES, SHAPE_DISPLAY_VALUES, SHAPE_LABELS
+        inc = float(self.original_res)
+
+        # --- Species selector ---
+        tk.Label(self.top_bar, text="Species:").pack(side="left", padx=(5, 2))
+        self._tree_species_var = tk.StringVar(value="Default")
+        species_cb = ttk.Combobox(
+            self.top_bar, textvariable=self._tree_species_var,
+            values=SPECIES_NAMES, state="readonly", width=14,
+        )
+        species_cb.pack(side="left")
+        species_cb.bind("<<ComboboxSelected>>", self._on_species_change)
+
+        ttk.Separator(self.top_bar, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2)
+
+        # --- Shape dropdown ---
+        tk.Label(self.top_bar, text="Shape:").pack(side="left", padx=(4, 2))
+        self._tree_shape_var = tk.StringVar(
+            value=SHAPE_LABELS.get(self.selected_crown_shape, "1 - Spherical"))
+        shape_cb = ttk.Combobox(
+            self.top_bar, textvariable=self._tree_shape_var,
+            values=SHAPE_DISPLAY_VALUES, state="readonly", width=16,
+        )
+        shape_cb.pack(side="left")
+        shape_cb.bind("<<ComboboxSelected>>", self._on_shape_selected)
+
+        # --- Crown ratio ---
+        tk.Label(self.top_bar, text="H/D ratio:").pack(side="left", padx=(6, 2))
+        self.tree_ratio_var = tk.StringVar(value=str(self.selected_crown_ratio))
+        sb = tk.Spinbox(self.top_bar, from_=0.1, to=5.0, increment=0.1, width=5,
+                        textvariable=self.tree_ratio_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        # --- Crown diameter ---
+        tk.Label(self.top_bar, text="Crown Diam.:").pack(side="left", padx=(6, 2))
+        self.tree_crown_var = tk.StringVar(value=str(self.selected_crown_diameter))
+        sb = tk.Spinbox(self.top_bar, from_=1.0, to=30.0, increment=inc, width=5,
+                        textvariable=self.tree_crown_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        # --- Tree height ---
+        tk.Label(self.top_bar, text="Tree Height:").pack(side="left", padx=(6, 2))
+        self.tree_height_var = tk.StringVar(value=str(self.selected_tree_height))
+        sb = tk.Spinbox(self.top_bar, from_=1.0, to=50.0, increment=inc, width=5,
+                        textvariable=self.tree_height_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        # --- LAI ---
+        tk.Label(self.top_bar, text="LAI:").pack(side="left", padx=(6, 2))
+        self.tree_lai_var = tk.StringVar(value=str(self.selected_lai))
+        sb = tk.Spinbox(self.top_bar, from_=0.1, to=20.0, increment=0.1, width=5,
+                        textvariable=self.tree_lai_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        # --- BAD/LAD ratio ---
+        tk.Label(self.top_bar, text="BAD/LAD:").pack(side="left", padx=(6, 2))
+        self.tree_bad_var = tk.StringVar(value=str(self.selected_bad_lad_ratio))
+        sb = tk.Spinbox(self.top_bar, from_=0.0, to=1.0, increment=0.005, width=6,
+                        textvariable=self.tree_bad_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        # --- Trunk diameter ---
+        tk.Label(self.top_bar, text="Trunk Diam.:").pack(side="left", padx=(6, 2))
+        self.tree_trunk_var = tk.StringVar(value=str(self.selected_trunk_diameter))
+        sb = tk.Spinbox(self.top_bar, from_=0.1, to=5.0, increment=0.05, width=5,
+                        textvariable=self.tree_trunk_var,
+                        command=self.update_single_tree_attributes)
+        sb.pack(side="left")
+        sb.bind("<FocusOut>", self.update_single_tree_attributes)
+        sb.bind("<Return>",   self.update_single_tree_attributes)
+
+        ttk.Separator(self.top_bar, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2)
+
+        ttk.Button(
+            self.top_bar, text="Tree Generator\u2026",
+            command=self._open_tree_generator_dialog,
+        ).pack(side="left", padx=(0, 4))
+
+        ttk.Separator(self.top_bar, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2)
+
+        self._bad_enabled_var = tk.BooleanVar(value=self.bad_enabled)
+        tk.Checkbutton(
+            self.top_bar, text="Write BAD",
+            variable=self._bad_enabled_var,
+            command=lambda: setattr(self, "bad_enabled", self._bad_enabled_var.get()),
+        ).pack(side="left", padx=(0, 4))
+
+        tk.Label(self.top_bar, text="  Right-click = remove",
+                 fg="gray").pack(side="left", padx=8)
+
+    def _on_species_change(self, event=None):
+        """Populate all spinboxes from the selected species."""
+        from base.tree_species import SPECIES_NAMES, get_species, SHAPE_LABELS
+        name = self._tree_species_var.get()
+        if name not in SPECIES_NAMES:
+            return
+        sp = get_species(name)
+        self.selected_crown_shape    = sp["crown_shape"]
+        self.selected_crown_ratio    = sp["crown_ratio"]
+        self.selected_crown_diameter = sp["crown_diameter"]
+        self.selected_tree_height    = sp["max_tree_height"]
+        self.selected_lai            = sp["lai_summer"]
+        self.selected_bad_lad_ratio  = sp["bad_lad_ratio"]
+        self.selected_trunk_diameter = sp["trunk_diameter"]
+        # Push to spinboxes
+        try:
+            self._tree_shape_var.set(SHAPE_LABELS.get(sp["crown_shape"], "1 - Ellipsoid"))
+            self.tree_ratio_var.set(str(sp["crown_ratio"]))
+            self.tree_crown_var.set(str(sp["crown_diameter"]))
+            self.tree_height_var.set(str(sp["max_tree_height"]))
+            self.tree_lai_var.set(str(sp["lai_summer"]))
+            self.tree_bad_var.set(str(sp["bad_lad_ratio"]))
+            self.tree_trunk_var.set(str(sp["trunk_diameter"]))
+        except AttributeError:
+            pass
+
+    def _on_shape_selected(self, event=None):
+        """Read shape combobox selection and update selected_crown_shape."""
+        label = self._tree_shape_var.get()
+        try:
+            self.selected_crown_shape = int(label.split(" ")[0])
+        except (ValueError, IndexError):
+            pass
+
+    def _open_tree_generator_dialog(self):
+        """Open (or show) the Tree Generator dialog (optional visual tool)."""
+        from base.tree_generator_dialog import TreeGeneratorDialog
+        if self._tree_gen_dialog is None or not self._tree_gen_dialog.winfo_exists():
+            self._tree_gen_dialog = TreeGeneratorDialog(
+                self.root,
+                on_apply_callback=self._on_generator_apply,
+                get_resolution=lambda: self.model.res,
+            )
+        else:
+            self._tree_gen_dialog.deiconify()
+            self._tree_gen_dialog.lift()
+
+    def _on_generator_apply(self, params_dict):
+        """Callback from TreeGeneratorDialog — sync parameters back to spinboxes."""
+        from base.tree_species import SHAPE_LABELS
+        mapping = [
+            ("selected_tree_height",    "tree_height_var",   "max_tree_height"),
+            ("selected_crown_diameter", "tree_crown_var",    "crown_diameter"),
+            ("selected_lai",            "tree_lai_var",      "lai"),
+            ("selected_crown_ratio",    "tree_ratio_var",    "crown_ratio"),
+            ("selected_bad_lad_ratio",  "tree_bad_var",      "bad_lad_ratio"),
+            ("selected_trunk_diameter", "tree_trunk_var",    "trunk_diameter"),
+        ]
+        for attr, var_name, key in mapping:
+            val = params_dict.get(key)
+            if val is not None:
+                setattr(self, attr, float(val))
+                try:
+                    getattr(self, var_name).set(str(float(val)))
+                except AttributeError:
+                    pass
+        shape = params_dict.get("crown_shape")
+        if shape is not None:
+            self.selected_crown_shape = int(shape)
+            try:
+                self._tree_shape_var.set(
+                    SHAPE_LABELS.get(int(shape), "1 - Ellipsoid"))
+            except AttributeError:
+                pass
+
+    def _clear_generator(self):
+        """Reset to Default species parameters."""
+        self._tree_species_var.set("Default")
+        self._on_species_change()
+
+    def update_single_tree_attributes(self, event=None):
+        """Read all spinbox values for the single-tree tool."""
+        for attr, var_name, cast in [
+            ("selected_tree_height",    "tree_height_var",  float),
+            ("selected_crown_diameter", "tree_crown_var",   float),
+            ("selected_lai",            "tree_lai_var",     float),
+            ("selected_crown_ratio",    "tree_ratio_var",   float),
+            ("selected_bad_lad_ratio",  "tree_bad_var",     float),
+            ("selected_trunk_diameter", "tree_trunk_var",   float),
+        ]:
+            try:
+                setattr(self, attr, cast(getattr(self, var_name).get()))
+            except (ValueError, AttributeError):
+                pass
+        # Shape is read from the combobox via _on_shape_selected; no need to reparse here.
+
+    def _erase_tree_at(self, row, col):
+        """Erase tree data at (row, col). Called by both right-click and right-drag."""
+        tid = self.model.get_tree_id_at(row, col)
+        if tid > 0:
+            matching = [t for t in self.model.tree_instances if t["id"] == tid]
+            if matching:
+                self.model.remove_tree_by_id(tid)
+                self.backend.redraw_tree_overlay()
+                return
+        if self.model.has_lad_at(row, col):
+            self.model.remove_loaded_lad_at(row, col)
+            self.backend.redraw_tree_overlay()
+
+    def on_right_click(self, event):
+        """Remove a tree when right-clicking on any of its cells.
+
+        Only active when the single_tree tool is selected.
+        Three cases are handled in order:
+        1. The cell belongs to a painted tree (has a tree_id) → remove that
+           whole tree by id, regardless of which pixel was clicked.
+        2. The cell has lad > 0 but no tree_id (loaded from an external file
+           without per-tree IDs) → erase only that one cell from _loaded_rv.
+        3. No vegetation data at this cell → do nothing.
+        """
+        if self.selected_tool_bar_function != "single_tree":
+            return
+        row, col = self.get_mouse_cell(event)
+        if not (0 <= row < self.ny and 0 <= col < self.nx):
+            return
+        self.save_state()
+        self._erase_tree_at(row, col)
+
+    def on_right_click_drag(self, event):
+        """Continue erasing while holding right mouse button (single_tree tool only)."""
+        if self.selected_tool_bar_function != "single_tree":
+            return
+        row, col = self.get_mouse_cell(event)
+        if not (0 <= row < self.ny and 0 <= col < self.nx):
+            return
+        self._erase_tree_at(row, col)
+
     def bucket_fill(self):
         self.save_state()
         if self.active_view == "soil":
@@ -336,8 +610,22 @@ class PaintApplication(framework.Framework):
         return tk.messagebox.askyesno(title, message)
         
         
+    def _resolved_vegetation_for_save(self):
+        """Return resolved_vegetation with BAD stripped out if disabled."""
+        rv = self.model.resolved_vegetation
+        if rv is None or self.bad_enabled:
+            return rv
+        return {k: (None if k == "bad" else v) for k, v in rv.items()}
+
     def save_netcdf(self):
-        Save(self.model.to_legacy_dict(), self.original_res, self.origin, self.surface_config)
+        Save(
+            self.model.to_legacy_dict(),
+            self.original_res,
+            self.origin,
+            self.surface_config,
+            tree_instances=self.model.tree_instances,
+            resolved_vegetation=self._resolved_vegetation_for_save(),
+            )
         
     def save_as_netcdf(self):
         file_path = fd.asksaveasfilename(
@@ -346,12 +634,20 @@ class PaintApplication(framework.Framework):
         )
         if not file_path:
             return
-        Save(self.model.to_legacy_dict(), self.original_res, self.origin, self.surface_config, file_path)
+        Save(
+            self.model.to_legacy_dict(), 
+            self.original_res, 
+            self.origin, 
+            self.surface_config,
+            file_path,
+            tree_instances=self.model.tree_instances,
+            resolved_vegetation=self._resolved_vegetation_for_save(),
+            )
     def load_project_netcdf_from_path(self, file_path):
         if not file_path:
             return  # No file path provided
         try:
-            grid, nx, ny, res, origin = Load(file_path)
+            grid, nx, ny, res, origin, resolved_vegetation = Load(file_path)
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
             return
@@ -364,6 +660,14 @@ class PaintApplication(framework.Framework):
         self.origin = origin
         
         self.model = gridmodel.GridModel.from_legacy_dict(grid, nx, ny, res, self.surface_config)
+        self.model.tree_instances = []
+        self.model._loaded_rv = resolved_vegetation
+        self.model.resolved_vegetation = resolved_vegetation
+        loaded_tid = resolved_vegetation.get("tree_id") if resolved_vegetation else None
+        if loaded_tid is not None:
+            max_id = int(loaded_tid.max())
+            if max_id > 0:
+                self.model.next_tree_id = max_id + 1
         self.backend.model = self.model
         self.rescale_grid()
         
@@ -466,6 +770,19 @@ class PaintApplication(framework.Framework):
         self.soil_tool_bar_functions = tuple(
             [f"soil_{soil_id}" for soil_id in sorted(self.get_soil_types().keys())]
         )
+
+        # Single-tree tool defaults (from "Default" species)
+        self.selected_tree_height     = 12.0
+        self.selected_crown_diameter  = 4.0
+        self.selected_trunk_diameter  = 0.35
+        self.selected_lai             = 3.0
+        self.selected_crown_shape     = 1     # PALM shape ID 1-6
+        self.selected_crown_ratio     = 1.0   # crown_height / crown_diameter
+        self.selected_bad_lad_ratio   = 0.5
+        self.bad_enabled              = True  # write BAD field to output
+
+        # Tree Generator dialog (optional visual tool)
+        self._tree_gen_dialog = None               # lazy-created Toplevel singleton
 
         self.active_view = "landcover"
         self.selected_height_tool_bar_function = self.height_tool_bar_functions[0]
@@ -751,6 +1068,17 @@ class PaintApplication(framework.Framework):
         else:
             lines.append("soil: -")
 
+        # Tree / resolved-vegetation info
+        tree_info = self.model.get_tree_info_at(row, col)
+        if tree_info is not None:
+            max_z = tree_info["max_height"]
+            lines.append(f"tree height: {max_z:.1f} m" if max_z is not None else "tree height: -")
+            lines.append(f"lad: {tree_info['lad']:.4f} m²/m³")
+            bad = tree_info["bad"]
+            lines.append(f"bad: {bad:.4f} m²/m³" if bad is not None else "bad: -")
+            tid = tree_info["tree_id"]
+            lines.append(f"tree id: {tid}" if tid > 0 else "tree id: -")
+
         return "\n".join(lines)
 
     def show_cell_info(self, row, col):
@@ -766,8 +1094,24 @@ class PaintApplication(framework.Framework):
             self.backend.clear_hover_preview()
             return
 
-        affected_pixels = self.get_pixels_in_brush(row, col)
-        self.backend.show_hover_preview(affected_pixels)
+        if self.selected_tool_bar_function == "single_tree":
+            crown_radius = self.selected_crown_diameter / 2.0
+            phys_res = float(self.model.res)
+            r_cells = int(math.ceil(crown_radius / phys_res))
+            cells = []
+            for dr in range(-r_cells, r_cells + 1):
+                for dc in range(-r_cells, r_cells + 1):
+                    r2 = row + dr
+                    c2 = col + dc
+                    if 0 <= r2 < self.ny and 0 <= c2 < self.nx:
+                        if (dr * phys_res) ** 2 + (dc * phys_res) ** 2 < crown_radius ** 2:
+                            cells.append((r2, c2))
+            if not cells:
+                cells = [(row, col)]
+            self.backend.show_hover_preview(cells)
+        else:
+            affected_pixels = self.get_pixels_in_brush(row, col)
+            self.backend.show_hover_preview(affected_pixels)
         
     # ------------------ Mouse ------------------
     
@@ -779,9 +1123,11 @@ class PaintApplication(framework.Framework):
             "<Button1-ButtonRelease>", self.on_mouse_button_released)
         self.canvas.bind("<Motion>", self.on_mouse_unpressed_motion)
         self.canvas.bind("<Leave>", self.on_canvas_leave)
-        
+        self.canvas.bind("<Button-3>", self.on_right_click)
+        self.canvas.bind("<B3-Motion>", self.on_right_click_drag)
+
         self.bind_wheel_zoom()
-        
+
         self.canvas.bind("<Button-2>", self.on_middle_mouse_pressed)
         self.canvas.bind("<B2-Motion>", self.on_middle_mouse_drag)
         self.canvas.bind("<ButtonRelease-2>", self.on_middle_mouse_released)
@@ -814,10 +1160,12 @@ class PaintApplication(framework.Framework):
         row, col = self.set_active_cell_from_event(event)
         self.show_current_coordinates(row, col)
         self.show_meter_coordinates(row, col)
-        self.show_cell_info(row, col)        
+        self.show_cell_info(row, col)
         self.update_hover_preview(row, col)
 
-        self.execute_selected_method()
+        # Single-tree placement fires only on click, not on drag
+        if self.selected_tool_bar_function != "single_tree":
+            self.execute_selected_method()
 
     def on_mouse_button_released(self, event):
         pass
@@ -953,7 +1301,7 @@ class PaintApplication(framework.Framework):
         menu_definitions = (
             'File - New Project//self.new_project, Save to NetCDF//self.save_netcdf, Save NetCDF as ...//self.save_as_netcdf, sep,'+
             'Load from NetCDF//self.load_project_netcdf, sep, Exit//self.root.quit',
-            'View- Landcover View//self.set_landcover_view, Heightmap View//self.set_heightmap_view, Soil View//self.set_soil_view, sep, Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out, Toggle Gridlines/Ctrl+G/self.toggle_gridlines',
+            'View- Landcover View//self.set_landcover_view, Heightmap View//self.set_heightmap_view, Soil View//self.set_soil_view, sep, Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out, Toggle Gridlines/Ctrl+G/self.toggle_gridlines, Toggle Tree Overlay/Ctrl+T/self.toggle_tree_overlay',
             'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
             'Extras - Generate Report//self.generate_report, Change Origin//self.change_origin',
         )
@@ -985,6 +1333,11 @@ class PaintApplication(framework.Framework):
         self.root.bind("<Control-z>", self.undo)
         self.root.bind("<Control-y>", self.redo)
         self.root.bind("<Control-g>", self.toggle_gridlines)
+        self.root.bind("<Control-t>", self.toggle_tree_overlay)
+
+    def toggle_tree_overlay(self, event=None):
+        """Toggle visibility of the tree crown overlay on the canvas."""
+        self.backend.set_tree_overlay_visible(not self.backend.show_tree_overlay)
 
     def toggle_gridlines(self, event=None):
         """Toggle visibility of white pixel outlines on the canvas."""
@@ -1424,7 +1777,13 @@ class PaintApplication(framework.Framework):
         
     def generate_report(self):
         """Trigger the analysis report."""
-        report.generate_report(self.root, self.model.to_legacy_dict(), self.nx, self.ny, self.original_res, self.origin)
+        report.generate_report(
+            self.root,
+            self.model.to_legacy_dict(),
+            self.nx, self.ny, self.original_res, self.origin,
+            resolved_vegetation=self.model.resolved_vegetation,
+            tree_instances=self.model.tree_instances,
+        )
         
     def change_origin(self):
         """Change the origin of the grid with a simple input form (prefilled with current values)."""

@@ -49,17 +49,288 @@ class GridModel:
         self.soil_type       = np.full((ny, nx), 1,              dtype=np.int8)
         self.pavement_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.water_type      = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
-        self.building_id     = np.full((ny, nx), self.INT_FILL,  dtype=np.int16)
+        self.building_id     = np.full((ny, nx), self.INT_FILL,  dtype=np.int32)
         self.building_height = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
         self.building_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
 
         self.water_pars = np.full((7, ny, nx), self.FLOAT_FILL, dtype=np.float32)
         # Future USM per-surface properties — populated by 3D editor?
         #self.building_surface_pars = {}
+        
+        # --------------------------------------------------------------
+        # Single-tree / resolved vegetation support
+        # --------------------------------------------------------------
+
+        # Editable tree objects managed by PALMPaint
+        self.tree_instances = []
+        self.next_tree_id = 1
+
+        # 3D-Volume information
+        self.resolved_vegetation = {
+            "zlad": None,          # shape: (nzlad,)
+            "lad": None,           # shape: (nzlad, ny, nx)
+            "bad": None,           # shape: (nzlad, ny, nx) or None
+            "tree_id": None,       # shape: (nzlad, ny, nx) or None
+        }
+        # _loaded_rv stores the resolved-vegetation arrays exactly as loaded from
+        # the NetCDF file (lad, bad, tree_id, zlad).  It acts as an immutable
+        # base layer that is preserved across add_tree()/remove_tree calls.
+        #
+        # Why we need it: _rebuild_resolved_vegetation() builds fresh lad/tree_id
+        # arrays from tree_instances, which is empty right after loading a file.
+        # Without this backup, every add_tree() call on a loaded project would
+        # wipe all vegetation that existed in the file.  By keeping _loaded_rv
+        # we can copy the original data back into the new arrays before overlaying
+        # the freshly-placed trees on top.
+        #
+        # Limitation: trees that were saved without per-cell tree_id (e.g. from an
+        # external PALM simulation) are stored here as raw lad data and cannot be
+        # individually selected via tree_instances.  They can only be erased
+        # cell-by-cell via remove_loaded_lad_at().
+        self._loaded_rv = None
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
-        self.water_pars[:, row, col] = self.FLOAT_FILL   
-         
+        self.water_pars[:, row, col] = self.FLOAT_FILL
+
+    # ------------------------------------------------------------------
+    # Single-tree management
+    # ------------------------------------------------------------------
+
+    def add_tree(self, row, col, tree_height=10.0, crown_diameter=7.0,
+                 trunk_diameter=0.3, crown_height=None, lai=3.0, tree_type_id=0,
+                 generator_params=None):
+        """Place a single resolved tree at (row, col).
+
+        If a tree already exists at (row, col) it is replaced.
+        Afterwards the 3-D resolved-vegetation arrays are rebuilt.
+
+        Parameters
+        ----------
+        generator_params : dict or None
+            If supplied, must be a dict of kwargs for TreeParams (from the
+            Tree Generator dialog).  The tree will be built by
+            ``generate_tree()`` at the physical grid resolution instead of the
+            simple ellipsoid fallback.  The dict must have exactly one of
+            ``lai`` or ``lad_max`` set (and the other None).
+        """
+        if crown_height is None:
+            crown_height = 0.6 * float(tree_height)
+        # Replace any previous tree on the same cell
+        self.tree_instances = [t for t in self.tree_instances
+                               if not (t["row"] == row and t["col"] == col)]
+        self.tree_instances.append({
+            "id": self.next_tree_id,
+            "row": int(row),
+            "col": int(col),
+            "tree_height": float(tree_height),
+            "crown_diameter": float(crown_diameter),
+            "trunk_diameter": float(trunk_diameter),
+            "crown_height": float(crown_height),
+            "lai": float(lai),
+            "tree_type_id": int(tree_type_id),
+            "generator_params": generator_params,
+        })
+        self.next_tree_id += 1
+        self._rebuild_resolved_vegetation()
+
+    def remove_tree_at(self, row, col):
+        """Remove the tree whose trunk is at (row, col) and rebuild."""
+        self.tree_instances = [t for t in self.tree_instances
+                               if not (t["row"] == row and t["col"] == col)]
+        self._rebuild_resolved_vegetation()
+
+    def remove_tree_by_id(self, tree_id):
+        """Remove the tree with the given id from tree_instances and rebuild."""
+        self.tree_instances = [t for t in self.tree_instances
+                               if t["id"] != tree_id]
+        self._rebuild_resolved_vegetation()
+
+    def get_tree_id_at(self, row, col):
+        """Return the tree_id of the resolved-vegetation cell at (row, col).
+
+        Searches all z-levels in resolved_vegetation["tree_id"] and returns
+        the first non-zero value found, or 0 if none.
+        """
+        tid_vol = self.resolved_vegetation.get("tree_id") if self.resolved_vegetation else None
+        if tid_vol is None:
+            return 0
+        col_ids = tid_vol[:, row, col]
+        nonzero = col_ids[col_ids > 0]
+        return int(nonzero[0]) if nonzero.size > 0 else 0
+
+    def has_lad_at(self, row, col):
+        """Return True if any z-level at (row, col) has lad > 0."""
+        lad_vol = self.resolved_vegetation.get("lad") if self.resolved_vegetation else None
+        if lad_vol is None:
+            return False
+        return bool(np.any(lad_vol[:, row, col] > 0))
+
+    def get_tree_info_at(self, row, col):
+        """Return a dict with tree diagnostics for (row, col), or None if no lad.
+
+        Keys:
+          max_height  – z-coordinate (m) of the highest lad > 0 level, or None
+          lad         – sum of lad values across all z-levels (m²/m³ · m column)
+          bad         – sum of bad values, or None if bad array is absent
+          tree_id     – integer tree ID (0 = no ID / loaded-only cell)
+        """
+        rv = self.resolved_vegetation
+        lad_vol = rv.get("lad") if rv else None
+        if lad_vol is None or not np.any(lad_vol[:, row, col] > 0):
+            return None
+
+        col_lad = lad_vol[:, row, col]
+        zlad = rv.get("zlad")
+        nz_idx = np.where(col_lad > 0)[0]
+        max_height = float(zlad[nz_idx[-1]]) if (zlad is not None and nz_idx.size > 0) else None
+
+        bad_vol = rv.get("bad")
+        if bad_vol is not None:
+            col_bad = bad_vol[:, row, col]
+            total_bad = float(col_bad[col_bad > 0].sum())
+        else:
+            total_bad = None
+
+        return {
+            "max_height": max_height,
+            "lad":        float(col_lad[col_lad > 0].sum()),
+            "bad":        total_bad,
+            "tree_id":    self.get_tree_id_at(row, col),
+        }
+
+    def remove_loaded_lad_at(self, row, col):
+        """Erase lad (and tree_id) data at (row, col) in the loaded base layer.
+
+        Used for right-click deletion of cells that have lad > 0 but no
+        corresponding tree_instance (i.e. vegetation loaded from an external
+        PALM file without per-tree IDs).
+        """
+        if self._loaded_rv is None:
+            return
+        lad = self._loaded_rv.get("lad")
+        if lad is not None:
+            lad[:, row, col] = 0.0
+        tid = self._loaded_rv.get("tree_id")
+        if tid is not None:
+            tid[:, row, col] = 0
+        self._rebuild_resolved_vegetation()
+
+    def _rebuild_resolved_vegetation(self):
+        """Recompute lad/tree_id from tree_instances using an ellipsoid crown model."""
+        has_loaded = (self._loaded_rv is not None
+                      and self._loaded_rv.get("lad") is not None)
+
+        if not self.tree_instances:
+            if has_loaded:
+                self.resolved_vegetation = self._loaded_rv
+            else:
+                self.resolved_vegetation = {"zlad": None, "lad": None,
+                                            "bad": None, "tree_id": None}
+            return
+
+        dz = float(self.res)
+        max_height = max(t["tree_height"] for t in self.tree_instances)
+        nz = int(np.ceil(max_height / dz)) + 1
+        if has_loaded:
+            nz = max(nz, self._loaded_rv["lad"].shape[0])
+        zlad = np.array([k * dz for k in range(nz)], dtype=np.float32)
+
+        lad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
+        bad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
+        tree_id_arr = np.zeros((nz, self.ny, self.nx), dtype=np.int32)
+
+        # Merge externally-loaded base data into the arrays
+        if has_loaded:
+            nz_src = min(self._loaded_rv["lad"].shape[0], nz)
+            lad_src = self._loaded_rv["lad"][:nz_src]
+            valid = lad_src > 0
+            lad[:nz_src][valid] = lad_src[valid]
+            loaded_tid = self._loaded_rv.get("tree_id")
+            if loaded_tid is not None:
+                nz_id = min(loaded_tid.shape[0], nz)
+                mask = loaded_tid[:nz_id] != 0
+                tree_id_arr[:nz_id][mask] = loaded_tid[:nz_id][mask]
+            loaded_bad = self._loaded_rv.get("bad")
+            if loaded_bad is not None:
+                nz_b = min(loaded_bad.shape[0], nz)
+                bad_src = loaded_bad[:nz_b]
+                valid_b = bad_src > 0
+                bad[:nz_b][valid_b] = bad_src[valid_b]
+
+        for tree in self.tree_instances:
+            tr = tree["row"]
+            tc = tree["col"]
+            tid = tree["id"]
+            gp = tree.get("generator_params")
+
+            # --- Always use generate_tree() (palm_extinction) ---
+            # If no generator_params are stored (old data / compatibility), build
+            # a sensible default dict from the per-tree geometry attributes.
+            if gp is None:
+                h_tree   = float(tree["tree_height"])
+                cd       = float(tree["crown_diameter"])
+                ch_tree  = float(tree.get("crown_height") or 0.6 * h_tree)
+                cr_ratio = ch_tree / cd if cd > 0.0 else 1.0
+                gp = {
+                    "max_tree_height":   h_tree,
+                    "crown_diameter":    cd,
+                    "trunk_diameter":    float(tree.get("trunk_diameter") or 0.3),
+                    "crown_shape":       1,       # ellipsoid default
+                    "crown_ratio":       cr_ratio,
+                    "alpha":             5.0,
+                    "beta":              3.0,
+                    "lai":               float(tree["lai"]),
+                    "lad_model":         "palm_extinction",
+                    "palm_extinction_k": 0.6,
+                    "bad_lad_ratio":     0.025,
+                }
+
+            from base.tree_generator_core import generate_tree, TreeParams, Grid
+            _grid = Grid(dx=dz, dy=dz, dz=dz, pad_xy=0.0, pad_z=0.0)
+            try:
+                result = generate_tree(TreeParams(**gp), _grid)
+            except Exception:
+                # Degenerate fallback: write a single voxel at ground level
+                lad[0, tr, tc] += float(tree["lai"]) / dz if dz > 0 else float(tree["lai"])
+                tree_id_arr[0, tr, tc] = tid
+                continue
+
+            lad_tree = result["lad"]         # (nz_t, ny_t, nx_t)
+            bad_tree = result["bad"]         # (nz_t, ny_t, nx_t)
+            z_tree   = result["coords"]["z"] # 1-D cell-centre z coords
+            nz_t, ny_t, nx_t = lad_tree.shape
+            cx_t = nx_t // 2
+            cy_t = ny_t // 2
+            for iz_t in range(nz_t):
+                z_val = z_tree[iz_t]
+                # floor maps cell-centre z=(k+0.5)*dz correctly to layer index k
+                # (Python's round() uses banker's rounding and would skip odd layers)
+                iz_g = int(z_val / dz)
+                if not (0 <= iz_g < nz):
+                    continue
+                for iy_t in range(ny_t):
+                    rr = tr - cy_t + iy_t
+                    if not (0 <= rr < self.ny):
+                        continue
+                    for ix_t in range(nx_t):
+                        cc = tc - cx_t + ix_t
+                        if not (0 <= cc < self.nx):
+                            continue
+                        v = lad_tree[iz_t, iy_t, ix_t]
+                        b = bad_tree[iz_t, iy_t, ix_t]
+                        if v > 0.0:
+                            lad[iz_g, rr, cc] += v
+                            tree_id_arr[iz_g, rr, cc] = tid
+                        if b > 0.0:
+                            bad[iz_g, rr, cc] += b
+
+        self.resolved_vegetation = {
+            "zlad": zlad,
+            "lad": lad,
+            "bad": bad,
+            "tree_id": tree_id_arr,
+        }
+
     # Helper methods for surface config access
     def set_water_parameter(self, par_index, row, col, value):
         """Set one water parameter for a single pixel."""

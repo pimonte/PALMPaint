@@ -10,7 +10,7 @@ from netCDF4 import Dataset
 import numpy as np
 
 
-def Save(data, res, ori, surface_config, filename="quicksave"):
+def Save(data, res, ori, surface_config, filename="quicksave", tree_instances=None, resolved_vegetation=None):
         #print("DATA", data)
         rows = [key[0] for key in data.keys()]  # Extract all row indices
         cols = [key[1] for key in data.keys()]  # Extract all column indices
@@ -26,12 +26,14 @@ def Save(data, res, ori, surface_config, filename="quicksave"):
         soil_data = np.full((ny, nx), -1) 
         pavement_data = np.full((ny, nx), -1)
         water_data = np.full((ny, nx), -1)
-        building_id_data = np.full((ny, nx), -1, dtype=np.int16)
+        building_id_data = np.full((ny, nx), -1, dtype=np.int32)
         building_height_data = np.full((ny, nx), -1)
         building_type_data = np.full((ny, nx), -1)
         height_data = np.full((ny, nx), -9999.0, dtype=np.float32)
         
         water_pars_data = np.full((7, ny, nx), -9999.0, dtype=np.float32)
+        
+
         
         for (row, col), metadata in data.items():
             #print(metadata)
@@ -120,6 +122,13 @@ def Save(data, res, ori, surface_config, filename="quicksave"):
             nc_water_type.units = "1"
             nc_water_type[:, :] = nc_water_type._FillValue
             
+            if resolved_vegetation is not None and resolved_vegetation.get("zlad") is not None:
+                zlad_data = resolved_vegetation["zlad"]
+                nc_file.createDimension("zlad", len(zlad_data))
+
+                nc_zlad = nc_file.createVariable("zlad", "f4", ("zlad",))
+                nc_zlad[:] = zlad_data
+            
             # Coordinates
         # -----------
             
@@ -184,7 +193,7 @@ def Save(data, res, ori, surface_config, filename="quicksave"):
                 print("BUILDINGS detected (switch on USM Namelist in PALM)")
                 
                 nc_building_id = nc_file.createVariable(
-                'building_id', 'i2', ('y', 'x'), fill_value=-127)
+                'building_id', 'i4', ('y', 'x'), fill_value=-127)
                 nc_building_id.long_name = "building ID"
                 nc_building_id.units = "1"
                 nc_building_id[:, :] = nc_building_id._FillValue
@@ -220,6 +229,28 @@ def Save(data, res, ori, surface_config, filename="quicksave"):
                 building_type_data[:, :],
                 nc_building_type._FillValue)
             
+            if resolved_vegetation is not None:
+                lad_data = resolved_vegetation.get("lad")
+                bad_data = resolved_vegetation.get("bad")
+                tree_id_data = resolved_vegetation.get("tree_id")
+
+                if lad_data is not None:
+                    nc_lad = nc_file.createVariable(
+                        "lad", "f4", ("zlad", "y", "x"), fill_value=-9999.0
+                    )
+                    nc_lad[:, :, :] = lad_data
+
+                if bad_data is not None:
+                    nc_bad = nc_file.createVariable(
+                        "bad", "f4", ("zlad", "y", "x"), fill_value=-9999.0
+                    )
+                    nc_bad[:, :, :] = bad_data
+
+                if tree_id_data is not None:
+                    nc_tree_id = nc_file.createVariable(
+                        "tree_id", "i4", ("zlad", "y", "x"), fill_value=-9999
+                    )
+                    nc_tree_id[:, :, :] = tree_id_data
 
     
             # Add metadata
