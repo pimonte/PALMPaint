@@ -8,6 +8,9 @@ This file is meant to be used with the PALMPaint application.
 from netCDF4 import Dataset
 import numpy as np
 
+from base.geo_reference import load_georeference
+from base.gridmodel import GridModel
+
 def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
     """Load a 2D variable (y, x) or return a filled fallback array."""
     if var_name in nc_file.variables:
@@ -61,7 +64,10 @@ def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np
 def Load(filename="output.nc"):
     """
     Load grid data from a NetCDF file and convert it into a dictionary
-    for the paint application. Returns a tuple: (grid, nx, ny, res).
+    for the paint application.
+
+    Returns:
+      (grid, nx, ny, res, dz, origin_tuple, resolved_vegetation, georef)
 
     The grid is a dictionary where keys are (row, col) and values are
     dictionaries with pixel properties:
@@ -81,17 +87,21 @@ def Load(filename="output.nc"):
         # Get dimensions
         nx = len(nc_file.dimensions["x"])
         ny = len(nc_file.dimensions["y"])
-        ori = [
-            getattr(nc_file, "origin_lat", 52.50965),
-            getattr(nc_file, "origin_lon", 13.3139),
-            getattr(nc_file, "origin_x", 3455249.0),
-            getattr(nc_file, "origin_y", 5424815.0),
-        ]
+        georef = load_georeference(nc_file)
+        ori = georef.as_origin_tuple()
 
-        # Determine resolution from the x coordinate variable.
+        # Determine horizontal resolution from the x coordinate variable.
         # The x values are defined as: np.arange(0, nx*dx, dx) + 0.5*dx in create_sd.py
         x = nc_file.variables["x"][:]
         res = float(x[1] - x[0]) if nx > 1 else 1.0
+
+        z_coords = None
+        if "buildings_3d" in nc_file.variables and "z" in nc_file.variables:
+            z_coords = nc_file.variables["z"][:]
+            if hasattr(z_coords, "filled"):
+                fv = getattr(nc_file.variables["z"], "_FillValue", -9999.0)
+                z_coords = z_coords.filled(fv)
+            z_coords = np.asarray(z_coords, dtype=np.float32)
 
         def get_data(var_name):
             if var_name in nc_file.variables:
@@ -107,7 +117,9 @@ def Load(filename="output.nc"):
         soil = get_2d_data(nc_file, "soil_type", ny, nx, fill_value=-127, dtype=np.int8)
         pav = get_2d_data(nc_file, "pavement_type", ny, nx, fill_value=-127, dtype=np.int8)
         water = get_2d_data(nc_file, "water_type", ny, nx, fill_value=-127, dtype=np.int8)
-        bldg_id = get_2d_data(nc_file, "building_id", ny, nx, fill_value=-127, dtype=np.int32)
+        bldg_id = get_2d_data(
+            nc_file, "building_id", ny, nx, fill_value=GridModel.BUILDING_ID_FILL, dtype=np.int32
+        )
         bldg_height = get_2d_data(nc_file, "buildings_2d", ny, nx, fill_value=-9999.0, dtype=np.float32)
         bldg_type = get_2d_data(nc_file, "building_type", ny, nx, fill_value=-127, dtype=np.int8)
         zt = get_2d_data(nc_file, "zt", ny, nx, fill_value=0.0, dtype=np.float32)
@@ -122,6 +134,17 @@ def Load(filename="output.nc"):
                 zlad = zlad.filled(fv)
             zlad = zlad.astype(np.float32)
 
+        stored_dz = getattr(nc_file, "palmpaint_dz", None)
+
+        if z_coords is not None:
+            dz = GridModel.infer_vertical_step(z_coords, res)
+        elif zlad is not None:
+            dz = GridModel.infer_dz_from_zlad(zlad, res)
+        elif stored_dz is not None:
+            dz = float(stored_dz)
+        else:
+            dz = float(res)
+
         lad = get_3d_data(nc_file, "lad", ny, nx, dtype=np.float32)
         bad = get_3d_data(nc_file, "bad", ny, nx, dtype=np.float32)
         tree_id = get_3d_data(nc_file, "tree_id", ny, nx, dtype=np.int32)
@@ -131,26 +154,30 @@ def Load(filename="output.nc"):
             "lad": lad,
             "bad": bad,
             "tree_id": tree_id,
+            "source_has_buildings_3d": "buildings_3d" in nc_file.variables,
         }
-        
-        
-        
-        
+
         grid = {}
         for row in range(ny):
             for col in range(nx):
+                building_height = float(bldg_height[row, col])
+                building_id = int(bldg_id[row, col])
+                building_type = int(bldg_type[row, col])
+                if building_height <= GridModel.FLOAT_FILL:
+                    building_id = GridModel.INT_FILL
+                    building_type = GridModel.INT_FILL
+
                 grid[(row, col)] = {
                     "zt":              float(zt[row, col]),
                     "vegetation_type": int(veg[row, col]),
                     "soil_type":       int(soil[row, col]),
                     "pavement_type":   int(pav[row, col]),
                     "water_type":      int(water[row, col]),
-                    "building_id":     int(bldg_id[row, col]),
-                    "building_height": float(bldg_height[row, col]),
-                    "building_type":   int(bldg_type[row, col]),
+                    "building_id":     building_id,
+                    "building_height": building_height,
+                    "building_type":   building_type,
                     
                     "water_temperature": float(water_pars[0, row, col]),
                 }
 
-    return grid, nx, ny, res, ori, resolved_vegetation
-
+    return grid, nx, ny, res, dz, ori, resolved_vegetation, georef

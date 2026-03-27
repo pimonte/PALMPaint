@@ -14,7 +14,7 @@ def format_value(value, width=10):
     else:
         return str(value)  # Handle non-numeric values gracefully
 
-def generate_report(root, pixels, nx, ny, dxy, ori, resolved_vegetation=None, tree_instances=None):
+def generate_report(root, pixels, nx, ny, dxy, dz, ori, resolved_vegetation=None, tree_instances=None):
     """Generate statistics and plot the domain."""
     land_use_counts = {"vegetation": 0, "pavement": 0, "soil": 0, "water": 0, "building": 0}
     total_pixels = len(pixels)
@@ -40,7 +40,7 @@ def generate_report(root, pixels, nx, ny, dxy, ori, resolved_vegetation=None, tr
     namelist_info += f"\n"
     namelist_info += f"dx: {dxy}\n"
     namelist_info += f"dy: {dxy}\n"
-    namelist_info += f"dz: \n"
+    namelist_info += f"dz: {dz}\n"
     
     # Domain information
     domain_data = {
@@ -48,6 +48,7 @@ def generate_report(root, pixels, nx, ny, dxy, ori, resolved_vegetation=None, tr
     "Domain size x (m)": format_value(nx * dxy),
     "Domain size y (m)": format_value(ny * dxy),
     "Grid width (m)": format_value(dxy),
+    "Vertical dz (m)": format_value(dz),
     "Number of Gridpoints x": format_value(nx),
     "Number of Gridpoints y": format_value(ny),
     }
@@ -78,7 +79,7 @@ def generate_report(root, pixels, nx, ny, dxy, ori, resolved_vegetation=None, tr
         import numpy as _np
 
         # dz: spacing between zlad levels (uniform assumed)
-        dz = GridModel.infer_dz_from_zlad(zlad, dxy)
+        dz = GridModel.infer_dz_from_zlad(zlad, dz)
 
         cell_area = float(dxy) ** 2  # m²
 

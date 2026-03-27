@@ -25,12 +25,18 @@ import time
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
+import tkinter.messagebox as messagebox
 
 import base.report as report
 import base.framework as framework
 import base.gridmodel as gridmodel
 import base.tkbackend as tkbackend
 from base.create_sd import Save
+from base.geo_reference import (
+    complete_georeference,
+    default_georeference,
+    snap_georeference_to_grid,
+)
 from base.load_sd import Load
 import base.surface_config as surface_config
 import base.welcome_screen as welcome_screen
@@ -39,7 +45,7 @@ import base.welcome_screen as welcome_screen
 
 
 class PaintApplication(framework.Framework):
-    origin = (52.50965, 13.3139, 3455249.0, 5424815.0) # lat, lon, projected x, projected y
+    origin = default_georeference().as_origin_tuple()  # lat, lon, projected x, projected y
     brush_size = 1
     active_cell = None
     
@@ -88,7 +94,14 @@ class PaintApplication(framework.Framework):
     def refresh_project_info_labels(self):
         """Refresh sidebar labels that depend on the currently loaded project."""
         if hasattr(self, "static_label"):
-            self.static_label.config(text=f"Grid width: {self.original_res} m")
+            self.static_label.config(
+                text=f"Grid width: {self.original_res} m\nVertical dz: {self.original_dz} m"
+            )
+
+    def _apply_georeference(self, georef):
+        """Persist a GeoReference on the application and keep legacy origin tuple in sync."""
+        self.georef = georef
+        self.origin = georef.as_origin_tuple()
     
     def execute_selected_method(self):
         if self.active_cell is None:
@@ -104,16 +117,14 @@ class PaintApplication(framework.Framework):
         func()
 
     def quantize_height(self, value):
-        """Quantize to original_res steps and clamp to non-negative heights."""
-        step = float(self.original_res) if self.original_res > 0 else 1.0
-        quantized = round(float(value) / step) * step
-        return max(0.0, quantized)
+        """Quantize terrain height using the configured vertical raster."""
+        return gridmodel.GridModel.quantize_terrain_height(value, self.original_dz)
 
     def height_tool(self):
         """Apply height editing mode (Raise/Lower/Set Height) to brush pixels."""
         center_row, center_col = self.active_cell
         affected_pixels = self.get_pixels_in_brush(center_row, center_col)
-        step = float(self.original_res) if self.original_res > 0 else 1.0
+        step = float(self.original_dz) if self.original_dz > 0 else 1.0
 
         affected = []
         for row, col in affected_pixels:
@@ -290,7 +301,8 @@ class PaintApplication(framework.Framework):
     def single_tree_options(self):
         """Display species selector and tree parameter spinboxes in the top bar."""
         from base.tree_species import SPECIES_NAMES, SHAPE_DISPLAY_VALUES, SHAPE_LABELS
-        inc = float(self.original_res)
+        horizontal_inc = float(self.original_res)
+        vertical_inc = float(self.original_dz)
 
         # --- Species selector ---
         tk.Label(self.top_bar, text="Species:").pack(side="left", padx=(5, 2))
@@ -330,7 +342,7 @@ class PaintApplication(framework.Framework):
         # --- Crown diameter ---
         tk.Label(self.top_bar, text="Crown Diam.:").pack(side="left", padx=(6, 2))
         self.tree_crown_var = tk.StringVar(value=str(self.selected_crown_diameter))
-        sb = tk.Spinbox(self.top_bar, from_=1.0, to=30.0, increment=inc, width=5,
+        sb = tk.Spinbox(self.top_bar, from_=1.0, to=30.0, increment=horizontal_inc, width=5,
                         textvariable=self.tree_crown_var,
                         command=self._refresh_single_tree_controls)
         sb.pack(side="left")
@@ -341,7 +353,7 @@ class PaintApplication(framework.Framework):
         # --- Tree height ---
         tk.Label(self.top_bar, text="Tree Height:").pack(side="left", padx=(6, 2))
         self.tree_height_var = tk.StringVar(value=str(self.selected_tree_height))
-        sb = tk.Spinbox(self.top_bar, from_=1.0, to=50.0, increment=inc, width=5,
+        sb = tk.Spinbox(self.top_bar, from_=1.0, to=50.0, increment=vertical_inc, width=5,
                         textvariable=self.tree_height_var,
                         command=self._refresh_single_tree_controls)
         sb.pack(side="left")
@@ -448,7 +460,7 @@ class PaintApplication(framework.Framework):
             self._tree_gen_dialog = TreeGeneratorDialog(
                 self.root,
                 on_apply_callback=self._on_generator_apply,
-                get_resolution=lambda: self.model.res,
+                get_grid_config=lambda: (self.model.res, self.model.res, self.model.dz),
             )
         else:
             self._tree_gen_dialog.deiconify()
@@ -645,10 +657,12 @@ class PaintApplication(framework.Framework):
             self.load_project_netcdf_from_path(file_path)
             return
             
-        _, new_nx, new_ny, new_res = result
+        _, new_nx, new_ny, new_res, new_dz = result
         self.nx = new_nx
         self.ny = new_ny
         self.original_res = new_res
+        self.original_dz = new_dz
+        self._set_export_buildings_3d(False)
         self.res = new_res
         self.rescale_grid()
         self.undo_stack.clear()
@@ -680,17 +694,71 @@ class PaintApplication(framework.Framework):
             return rv
         return {k: (None if k == "bad" else v) for k, v in rv.items()}
 
-    def _save_project_to_file(self, filename="quicksave"):
+    def _set_export_buildings_3d(self, enabled, *, mark_dirty=False):
+        self.export_buildings_3d = bool(enabled)
+        if hasattr(self, "_export_buildings_3d_var"):
+            self._export_buildings_3d_var.set(self.export_buildings_3d)
+        if mark_dirty:
+            self.dirty = True
+
+    def discretize_project_to_dz(self):
+        """Apply the current dz-based discretization rules to the whole project."""
+        if not tk.messagebox.askyesno(
+            "Discretize Project",
+            (
+                f"Discretize terrain and building heights for the whole project using dz = "
+                f"{self.original_dz:g} m?\n\n"
+                "This changes the currently loaded values in the editor."
+            ),
+        ):
+            return
+
+        summary = self.model.discretize_all_heights()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+        self.backend.redraw_tree_overlay()
+        self.refresh_coordinate_labels()
+        self.dirty = True
+
+        tk.messagebox.showinfo(
+            "Project discretized",
+            (
+                f"Terrain cells changed: {summary['terrain_changed']}\n"
+                f"Building heights changed: {summary['building_height_changed']}\n"
+                f"Buildings cleared: {summary['cleared_buildings']}"
+            ),
+        )
+
+    def _save_project_to_file(self, filename="quicksave", *, show_export_warnings=True):
         """Persist the current project to a NetCDF file."""
-        Save(
+        save_summary = Save(
             self.model.to_legacy_dict(),
             self.original_res,
+            self.original_dz,
             self.origin,
             self.surface_config,
             filename,
             tree_instances=self.model.tree_instances,
             resolved_vegetation=self._resolved_vegetation_for_save(),
+            georef=self.georef,
+            export_buildings_3d=self.export_buildings_3d,
         )
+        if (
+            show_export_warnings
+            and self.export_buildings_3d
+            and save_summary.get("deleted_building_count", 0) > 0
+        ):
+            deleted_count = int(save_summary["deleted_building_count"])
+            replaced_pixels = int(save_summary.get("replaced_building_pixel_count", 0))
+            threshold = 0.5 * float(self.original_dz)
+            messagebox.showwarning(
+                "buildings_3d export warning",
+                (
+                    f"{deleted_count} building(s) were removed for buildings_3d export because "
+                    f"their height does not exceed dz/2 = {threshold:g} m.\n\n"
+                    f"{replaced_pixels} affected pixel(s) were written as asphalt "
+                    "(pavement_type = 1)."
+                ),
+            )
         self.dirty = False
 
     def save_netcdf(self, event=None):
@@ -730,7 +798,7 @@ class PaintApplication(framework.Framework):
         try:
             if self.dirty and self.autosave_file_count > 0:
                 filename = self._autosave_filename(self._autosave_next_slot)
-                self._save_project_to_file(filename)
+                self._save_project_to_file(filename, show_export_warnings=False)
                 self._autosave_next_slot = (
                     self._autosave_next_slot + 1
                 ) % self.autosave_file_count
@@ -826,7 +894,7 @@ class PaintApplication(framework.Framework):
         if not file_path:
             return  # No file path provided
         try:
-            grid, nx, ny, res, origin, resolved_vegetation = Load(file_path)
+            grid, nx, ny, res, dz, origin, resolved_vegetation, georef = Load(file_path)
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
             return
@@ -835,13 +903,17 @@ class PaintApplication(framework.Framework):
         self.nx = nx
         self.ny = ny
         self.original_res = res
+        self.original_dz = dz
         self.res = res
-        self.origin = origin
+        self._apply_georeference(georef)
         
-        self.model = gridmodel.GridModel.from_legacy_dict(grid, nx, ny, res, self.surface_config)
+        self.model = gridmodel.GridModel.from_legacy_dict(
+            grid, nx, ny, res, dz, self.surface_config, quantize=False
+        )
         self.model.tree_instances = []
         self.model._loaded_rv = resolved_vegetation
         self.model.resolved_vegetation = resolved_vegetation
+        self._set_export_buildings_3d(bool(resolved_vegetation.get("source_has_buildings_3d")))
         loaded_tid = resolved_vegetation.get("tree_id") if resolved_vegetation else None
         if loaded_tid is not None:
             max_id = int(loaded_tid.max())
@@ -940,11 +1012,14 @@ class PaintApplication(framework.Framework):
             self.res = computed_res
 
     
-    def __init__(self, root,  nx=16, ny=16, res=4):
+    def __init__(self, root,  nx=16, ny=16, res=4, dz=None):
         self.nx = nx
         self.ny = ny
         self.original_res = res
+        self.original_dz = res if dz is None else dz
         self.res = res
+        self._apply_georeference(default_georeference())
+        self.ui_lower_left_origin = False
         
         
         self.show_grid_lines = True
@@ -955,7 +1030,7 @@ class PaintApplication(framework.Framework):
         self._zoom_pending_anchor = (None, None)
 
         self.building_id = 1
-        self.building_height = self.original_res  # Start at grid width step
+        self.building_height = self.original_dz
         self.building_type = 2
         
         self.surface_config = surface_config.SURFACE_CONFIG
@@ -983,6 +1058,7 @@ class PaintApplication(framework.Framework):
         self.selected_crown_ratio     = 1.0   # crown_height / crown_diameter
         self.selected_bad_lad_ratio   = 0.5
         self.bad_enabled              = True  # write BAD field to output
+        self.export_buildings_3d      = False
         # Full params_dict from the Tree Generator dialog, if the user last clicked
         # "Apply to Brush".  Used verbatim as generator_params in single_tree().
         # Reset to None when the user picks a species or clears the generator.
@@ -1011,7 +1087,9 @@ class PaintApplication(framework.Framework):
         
         super().__init__(root)
         self.rescale_grid()
-        self.model = gridmodel.GridModel(nx, ny, self.original_res, self.surface_config)
+        self.model = gridmodel.GridModel(
+            nx, ny, self.original_res, self.original_dz, self.surface_config
+        )
         self.create_gui()  # backend is created inside create_gui
         self.backend.draw_grid(self.nx, self.ny, self.res,)
         self.bind_mouse()
@@ -1023,7 +1101,9 @@ class PaintApplication(framework.Framework):
 
     def draw_grid(self, nx, ny, res):
         """Reset the data model and redraw the full canvas grid."""
-        self.model = gridmodel.GridModel(nx, ny, self.original_res, self.surface_config)
+        self.model = gridmodel.GridModel(
+            nx, ny, self.original_res, self.original_dz, self.surface_config
+        )
         self.backend.model = self.model
         self.backend.clear()
         self.backend.draw_grid(nx, ny, res)
@@ -1046,7 +1126,7 @@ class PaintApplication(framework.Framework):
             self.root, self.model, self.nx, self.ny, self.res
         )
         self.backend.set_view_mode(self.active_view)
-        self.backend.set_height_view_config(self.height_view_min, self.original_res, self.height_view_levels)
+        self.backend.set_height_view_config(self.height_view_min, self.original_dz, self.height_view_levels)
         self.backend.set_grid_lines_visible(self.show_grid_lines)
         self.create_current_coordinate_label()
         self.create_meter_coordinate_label()
@@ -1168,7 +1248,7 @@ class PaintApplication(framework.Framework):
 
         self.static_label = tk.Label(
             info_frame, 
-            text=f"Grid width: {self.original_res} m", 
+            text=f"Grid width: {self.original_res} m\nVertical dz: {self.original_dz} m", 
             fg="black",       # Text color
             justify="left"
         )
@@ -1183,7 +1263,8 @@ class PaintApplication(framework.Framework):
 
     def show_current_coordinates(self, row, col):
         """Update the current coordinate label based on mouse movement."""
-        coordinate_string = "nx:{0}\nny:{1}".format(col, row)
+        display_row = self.ny - row - 1 if self.ui_lower_left_origin else row
+        coordinate_string = "nx:{0}\nny:{1}".format(col, display_row)
         self.current_coordinate_label.config(text=coordinate_string)
         
     def create_meter_coordinate_label(self):
@@ -1193,10 +1274,23 @@ class PaintApplication(framework.Framework):
 
     def show_meter_coordinates(self, row, col):
         """Update the meter coordinate label based on mouse movement."""
-        meter_x = (col + 0.5) * self.original_res
-        meter_y = (row + 0.5) * self.original_res
+        if self.ui_lower_left_origin:
+            meter_x = self.georef.origin_x + (col + 0.5) * self.original_res
+            meter_y = self.georef.origin_y + (self.ny - row - 0.5) * self.original_res
+        else:
+            meter_x = (col + 0.5) * self.original_res
+            meter_y = (row + 0.5) * self.original_res
         coordinate_string = "x:{:.2f}\ny:{:.2f}".format(meter_x, meter_y)
         self.meter_coordinate_label.config(text=coordinate_string)
+
+    def refresh_coordinate_labels(self):
+        """Refresh the coordinate labels after changing the UI origin setting."""
+        cell = self.hover_cell if self.hover_cell is not None else self.active_cell
+        if cell is None:
+            return
+        row, col = cell
+        self.show_current_coordinates(row, col)
+        self.show_meter_coordinates(row, col)
     
     def create_cell_info_label(self):
         """Create a fixed-width sidebar area that shows properties of the hovered cell."""
@@ -1260,7 +1354,7 @@ class PaintApplication(framework.Framework):
             lines.append(f"building id: {building_id if building_id > self.model.INT_FILL else '-'}")
             lines.append(
                 f"building height: {building_height:.2f} m"
-                if building_height > 0.0 else "building height: -"
+                if building_height > self.model.FLOAT_FILL else "building height: -"
             )
             lines.append(
                 f"building type: {building_type}"
@@ -1529,9 +1623,20 @@ class PaintApplication(framework.Framework):
             'Load from NetCDF//self.load_project_netcdf, sep, Exit//self.exit_application',
             'View- Landcover View//self.set_landcover_view, Heightmap View//self.set_heightmap_view, Soil View//self.set_soil_view, sep, Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out, Toggle Gridlines/Ctrl+G/self.toggle_gridlines, Toggle Tree Overlay/Ctrl+T/self.toggle_tree_overlay',
             'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
-            'Extras - Autosave Settings//self.open_autosave_settings, Generate Report//self.generate_report, Change Origin//self.change_origin',
+            'Extras - Autosave Settings//self.open_autosave_settings, Generate Report//self.generate_report, Change Origin//self.change_origin, Discretize Project to dz//self.discretize_project_to_dz',
         )
         self.build_menu(menu_definitions)
+        self.menubar = self.root.nametowidget(self.root["menu"])
+        extras_menu = self.root.nametowidget(self.menubar.entrycget(self.menubar.index("end"), "menu"))
+        self._export_buildings_3d_var = tk.BooleanVar(value=self.export_buildings_3d)
+        extras_menu.add_separator()
+        extras_menu.add_checkbutton(
+            label="Export buildings_3d",
+            variable=self._export_buildings_3d_var,
+            command=lambda: self._set_export_buildings_3d(
+                self._export_buildings_3d_var.get(), mark_dirty=True
+            ),
+        )
 
     def set_active_view(self, view_mode):
         """Switch display mode and refresh top bar + canvas."""
@@ -1826,7 +1931,7 @@ class PaintApplication(framework.Framework):
     def building_options(self):
         """Display options for the building tool."""
         initial_id = tk.IntVar(value=1)  # initial value
-        initial_height = tk.IntVar(value=10.0)  # initial value
+        initial_height = tk.DoubleVar(value=float(self.building_height))
         initial_type = tk.IntVar(value=2)
 
         tk.Label(self.top_bar, text='building_id:').pack(side="left", padx=5, )
@@ -1834,8 +1939,16 @@ class PaintApplication(framework.Framework):
             self.top_bar, from_=1, to=200, width=3, textvariable=initial_id, command=self.update_building_attributes)
         self.building_id_spinbox.pack(side="left")
         tk.Label(self.top_bar, text='building_height:').pack(side="left", padx=5)
+        self.building_height_var = initial_height
         self.building_height_spinbox = tk.Spinbox(
-            self.top_bar, from_=self.original_res, to=self.original_res * 100, increment=self.original_res, width=3, textvariable=initial_height, command=self.update_building_attributes)
+            self.top_bar,
+            from_=0.0,
+            to=self.original_dz * 100,
+            increment=self.original_dz,
+            width=6,
+            textvariable=initial_height,
+            command=self.update_building_attributes,
+        )
         self.building_height_spinbox.pack(side="left")
         tk.Label(self.top_bar, text='building_type:').pack(side="left", padx=5)
         self.building_type_spinbox = tk.Spinbox(
@@ -1847,7 +1960,19 @@ class PaintApplication(framework.Framework):
         Update the current building attributes based on spinbox values.
         """
         self.building_id = int(self.building_id_spinbox.get())
-        self.building_height = int(self.building_height_spinbox.get())
+        try:
+            entered_height = float(self.building_height_spinbox.get())
+        except ValueError:
+            entered_height = float(self.original_dz)
+        quantized_height = gridmodel.GridModel.quantize_building_height(
+            entered_height,
+            self.original_dz,
+        )
+        if quantized_height <= self.model.FLOAT_FILL:
+            quantized_height = float(self.original_dz)
+        self.building_height = float(quantized_height)
+        if hasattr(self, "building_height_var"):
+            self.building_height_var.set(self.building_height)
         self.building_type = int(self.building_type_spinbox.get())
 
     def heightmap_options(self):
@@ -1858,7 +1983,7 @@ class PaintApplication(framework.Framework):
             self.top_bar,
             from_=0.0,
             to=10000.0,
-            increment=self.original_res,
+            increment=self.original_dz,
             width=8,
             textvariable=self.height_set_var,
             command=self.update_height_set_value,
@@ -1890,7 +2015,7 @@ class PaintApplication(framework.Framework):
         self.height_levels_spinbox.bind("<FocusOut>", lambda event: self.update_height_view_range())
         self.height_levels_spinbox.bind("<Return>", lambda event: self.update_height_view_range())
 
-        max_value = self.height_view_min + self.height_view_levels * self.original_res
+        max_value = self.height_view_min + self.height_view_levels * self.original_dz
         self.height_range_hint_label = tk.Label(
             self.top_bar,
             text=f"range: {self.height_view_min:.1f} .. {max_value:.1f} m",
@@ -1931,12 +2056,12 @@ class PaintApplication(framework.Framework):
         self.height_view_levels = new_levels
         self.backend.set_height_view_config(
             self.height_view_min,
-            self.original_res,
+            self.original_dz,
             self.height_view_levels,
         )
 
         if hasattr(self, "height_range_hint_label"):
-            max_value = self.height_view_min + self.height_view_levels * self.original_res
+            max_value = self.height_view_min + self.height_view_levels * self.original_dz
             self.height_range_hint_label.config(
                 text=f"range: {self.height_view_min:.1f} .. {max_value:.1f} m"
             )
@@ -1990,7 +2115,7 @@ class PaintApplication(framework.Framework):
                 fill=palette[idx],
             )
 
-        max_height = self.height_view_min + levels * self.original_res
+        max_height = self.height_view_min + levels * self.original_dz
         self.height_legend_max_label.config(text=f"{max_height:.1f} m")
         self.height_legend_min_label.config(text=f"{self.height_view_min:.1f} m")
 
@@ -2008,55 +2133,238 @@ class PaintApplication(framework.Framework):
         report.generate_report(
             self.root,
             self.model.to_legacy_dict(),
-            self.nx, self.ny, self.original_res, self.origin,
+            self.nx, self.ny, self.original_res, self.original_dz, self.origin,
             resolved_vegetation=self.model.resolved_vegetation,
             tree_instances=self.model.tree_instances,
         )
         
     def change_origin(self):
-        """Change the origin of the grid with a simple input form (prefilled with current values)."""
+        """Edit origin coordinates using the dedicated georeference module."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Origin")
-        dialog.geometry("300x200")
+        dialog.geometry("430x390")
         dialog.resizable(False, False)
 
-        labels = ["Latitude (°N):", "Longitude (°E):", "Projected X (m):", "Projected Y (m):"]
-        current_values = [
-            str(self.origin[0]),  # Latitude
-            str(self.origin[1]),  # Longitude
-            str(self.origin[2]),  # Projected X
-            str(self.origin[3])   # Projected Y
-        ]
+        status_var = tk.StringVar(value=f"{self.georef.epsg_string} - {self.georef.crs_name}")
+        mode_var = tk.StringVar()
+        lat_var = tk.StringVar(value=f"{self.georef.origin_lat:.10f}")
+        lon_var = tk.StringVar(value=f"{self.georef.origin_lon:.10f}")
+        x_var = tk.StringVar(value=f"{self.georef.origin_x:.3f}")
+        y_var = tk.StringVar(value=f"{self.georef.origin_y:.3f}")
+        epsg_var = tk.StringVar(value=str(self.georef.epsg_code))
+        lower_left_var = tk.BooleanVar(value=self.ui_lower_left_origin)
+        original_ui_lower_left_origin = self.ui_lower_left_origin
 
-        entries = []
+        state = {"source": "latlon", "suspend": False}
 
-        for i, label in enumerate(labels):
-            tk.Label(dialog, text=label).pack()
-            entry = tk.Entry(dialog)
-            entry.insert(0, current_values[i])  # Prefill with current value
-            entry.pack()
-            entries.append(entry)
+        frame = tk.Frame(dialog, padx=12, pady=12)
+        frame.pack(fill="both", expand=True)
+
+        row = 0
+        for label, variable in (
+            ("Latitude (deg):", lat_var),
+            ("Longitude (deg):", lon_var),
+            ("Projected X (m):", x_var),
+            ("Projected Y (m):", y_var),
+            ("EPSG:", epsg_var),
+        ):
+            tk.Label(frame, text=label, anchor="w").grid(row=row, column=0, sticky="w", pady=2)
+            tk.Entry(frame, textvariable=variable, width=22).grid(row=row, column=1, sticky="ew", pady=2)
+            row += 1
+
+        frame.grid_columnconfigure(1, weight=1)
+        tk.Label(
+            frame,
+            text=(
+                "Origin means the lower-left corner of the domain.\n"
+                "Longitude / projected X define the western border,\n"
+                "latitude / projected Y define the southern border.\n"
+                "Projected coordinates are snapped to the grid width."
+            ),
+            justify="left",
+            fg="gray",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 8))
+        row += 1
+
+        tk.Checkbutton(
+            frame,
+            text="Use lower-left corner as 0,0 in the UI coordinate display",
+            variable=lower_left_var,
+            anchor="w",
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        row += 1
+
+        tk.Label(frame, textvariable=status_var, justify="left").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        row += 1
+
+        def apply_ui_origin_preview():
+            self.ui_lower_left_origin = bool(lower_left_var.get())
+            self.refresh_coordinate_labels()
+
+        def auto_conversion_enabled():
+            try:
+                return int(epsg_var.get()) in (25832, 25833)
+            except ValueError:
+                return False
+
+        def update_mode_ui():
+            try:
+                epsg_code = int(epsg_var.get())
+            except ValueError:
+                epsg_code = None
+
+            if epsg_code == 25832:
+                status_var.set("EPSG:25832 - ETRS89 / UTM zone 32N")
+            elif epsg_code == 25833:
+                status_var.set("EPSG:25833 - ETRS89 / UTM zone 33N")
+            elif epsg_code is not None and epsg_code != self.georef.epsg_code:
+                status_var.set(f"EPSG:{epsg_code} - Manual CRS")
+
+            if auto_conversion_enabled():
+                mode_var.set("Automatic conversion mode for Germany (EPSG:25832 / EPSG:25833).")
+                latlon_button.config(state="normal")
+                projected_button.config(state="normal")
+            else:
+                mode_var.set(self.georef.manual_mode_warning)
+                latlon_button.config(state="disabled")
+                projected_button.config(state="disabled")
+
+        def mark_source(source_name):
+            if state["suspend"]:
+                return
+            state["source"] = source_name
+
+        for variable in (lat_var, lon_var):
+            variable.trace_add("write", lambda *_args: mark_source("latlon"))
+        for variable in (x_var, y_var):
+            variable.trace_add("write", lambda *_args: mark_source("projected"))
+
+        def set_fields(georef):
+            state["suspend"] = True
+            lat_var.set(f"{georef.origin_lat:.10f}")
+            lon_var.set(f"{georef.origin_lon:.10f}")
+            x_var.set(f"{georef.origin_x:.3f}")
+            y_var.set(f"{georef.origin_y:.3f}")
+            epsg_var.set(str(georef.epsg_code))
+            status_var.set(f"{georef.epsg_string} - {georef.crs_name}")
+            state["suspend"] = False
+            update_mode_ui()
+
+        def recalc_from_latlon():
+            try:
+                georef = snap_georeference_to_grid(complete_georeference(
+                    origin_lat=float(lat_var.get()),
+                    origin_lon=float(lon_var.get()),
+                    epsg_code=int(epsg_var.get()),
+                    rotation_angle=self.georef.rotation_angle,
+                ), self.original_res)
+            except ValueError as exc:
+                tk.messagebox.showerror("Invalid Input", str(exc))
+                return
+            state["source"] = "latlon"
+            set_fields(georef)
+
+        def recalc_from_projected():
+            try:
+                georef = snap_georeference_to_grid(complete_georeference(
+                    origin_x=float(x_var.get()),
+                    origin_y=float(y_var.get()),
+                    epsg_code=int(epsg_var.get()),
+                    rotation_angle=self.georef.rotation_angle,
+                    prefer_projected=True,
+                ), self.original_res)
+            except ValueError as exc:
+                tk.messagebox.showerror("Invalid Input", str(exc))
+                return
+            state["source"] = "projected"
+            set_fields(georef)
+
+        button_row = tk.Frame(frame)
+        button_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        latlon_button = tk.Button(button_row, text="Lat/Lon -> UTM", command=recalc_from_latlon)
+        latlon_button.pack(side="left")
+        projected_button = tk.Button(button_row, text="UTM -> Lat/Lon", command=recalc_from_projected)
+        projected_button.pack(side="left", padx=8)
+        row += 1
+
+        lower_left_var.trace_add("write", lambda *_args: apply_ui_origin_preview())
+        epsg_var.trace_add("write", lambda *_args: update_mode_ui())
+
+        tk.Label(frame, textvariable=mode_var, justify="left", fg="darkred", wraplength=380).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        row += 1
+
+        update_mode_ui()
 
         def submit():
             """Retrieve values and update origin."""
             try:
-                lat = float(entries[0].get())
-                lon = float(entries[1].get())
-                x = float(entries[2].get())
-                y = float(entries[3].get())
+                epsg_code = int(epsg_var.get())
+                if auto_conversion_enabled():
+                    if state["source"] == "projected":
+                        georef = complete_georeference(
+                            origin_x=float(x_var.get()),
+                            origin_y=float(y_var.get()),
+                            epsg_code=epsg_code,
+                            rotation_angle=self.georef.rotation_angle,
+                            prefer_projected=True,
+                        )
+                    else:
+                        georef = complete_georeference(
+                            origin_lat=float(lat_var.get()),
+                            origin_lon=float(lon_var.get()),
+                            epsg_code=epsg_code,
+                            rotation_angle=self.georef.rotation_angle,
+                        )
+                    georef = snap_georeference_to_grid(georef, self.original_res)
+                else:
+                    manual_crs_name = (
+                        self.georef.crs_name
+                        if epsg_code == self.georef.epsg_code
+                        else f"Manual CRS (EPSG:{epsg_code})"
+                    )
+                    manual_crs_wkt = self.georef.crs_wkt if epsg_code == self.georef.epsg_code else None
+                    georef = complete_georeference(
+                        origin_lat=float(lat_var.get()),
+                        origin_lon=float(lon_var.get()),
+                        origin_x=float(x_var.get()),
+                        origin_y=float(y_var.get()),
+                        epsg_code=epsg_code,
+                        rotation_angle=self.georef.rotation_angle,
+                        allow_manual=True,
+                        crs_name=manual_crs_name,
+                        crs_wkt=manual_crs_wkt,
+                    )
 
-                self.origin = (lat, lon, x, y)
+                self._apply_georeference(georef)
+                self.ui_lower_left_origin = bool(lower_left_var.get())
+                self.refresh_coordinate_labels()
                 self.dirty = True
                 dialog.destroy()
 
-                tk.messagebox.showinfo("Origin Updated",
-                    f"New Origin Set:\nLatitude: {lat:.6f}°N\nLongitude: {lon:.6f}°E\n"
-                    f"Projected X: {x:.2f} m\nProjected Y: {y:.2f} m")
+                tk.messagebox.showinfo(
+                    "Origin Updated",
+                    f"New Origin Set:\nLatitude: {georef.origin_lat:.6f}°N\n"
+                    f"Longitude: {georef.origin_lon:.6f}°E\n"
+                    f"Projected X: {georef.origin_x:.2f} m\n"
+                    f"Projected Y: {georef.origin_y:.2f} m\n"
+                    f"CRS: {georef.epsg_string}\n"
+                    f"Mode: {'automatic' if georef.auto_conversion_enabled else 'manual'}",
+                )
+            except ValueError as exc:
+                tk.messagebox.showerror("Invalid Input", str(exc))
 
-            except ValueError:
-                tk.messagebox.showerror("Invalid Input", "Please enter valid numeric values.")
+        def cancel():
+            self.ui_lower_left_origin = original_ui_lower_left_origin
+            self.refresh_coordinate_labels()
+            dialog.destroy()
 
-        tk.Button(dialog, text="OK", command=submit).pack(pady=10)
+        tk.Button(frame, text="OK", command=submit).grid(row=row, column=0, sticky="w", pady=4)
+        tk.Button(frame, text="Cancel", command=cancel).grid(row=row, column=1, sticky="e", pady=4)
 
         dialog.grab_set()  # Make it modal
         dialog.wait_window()
@@ -2080,6 +2388,6 @@ if __name__ == '__main__':
         app = PaintApplication(root, 16, 16, 4)
         app.load_project_netcdf_from_path(file_path)
     else:
-        _, nx, ny, res = welcome_result
-        app = PaintApplication(root, nx, ny, res)
+        _, nx, ny, res, dz = welcome_result
+        app = PaintApplication(root, nx, ny, res, dz)
     root.mainloop()

@@ -9,6 +9,8 @@ or a future 3D viewer.
     Licensed under the GNU General Public License v3 or later.
 """
 
+import math
+
 import numpy as np
 
 
@@ -25,28 +27,85 @@ class GridModel:
 
     INT_FILL   = -127
     FLOAT_FILL = -9999.0
+    BUILDING_ID_FILL = -9999
 
     @staticmethod
-    def infer_dz_from_zlad(zlad, fallback):
-        """Infer a representative vertical spacing from a zlad coordinate array.
+    def infer_vertical_step(coords, fallback):
+        """Infer a representative vertical spacing from a 1-D vertical coordinate array.
 
         Some external files contain a leading zero followed by regularly spaced
         layer coordinates (for example ``0, 2, 6, 10, ...``). Using only the
-        first difference would underestimate dz in that case, so we use the
-        median positive spacing instead.
+        first difference would underestimate dz in that case. We therefore
+        ignore the leading half-step when present.
         """
-        if zlad is None:
+        if coords is None:
             return float(fallback)
-        zlad = np.asarray(zlad, dtype=np.float32)
-        if zlad.size < 2:
+        coords = np.asarray(coords, dtype=np.float32)
+        if coords.size < 2:
             return float(fallback)
-        diffs = np.diff(zlad)
+        diffs = np.diff(coords)
         diffs = diffs[np.isfinite(diffs) & (diffs > 0.0)]
         if diffs.size == 0:
             return float(fallback)
+        if coords[0] == 0.0:
+            if diffs.size == 1:
+                return float(2.0 * diffs[0])
+            trailing_diffs = diffs[1:]
+            if trailing_diffs.size > 0:
+                trailing_median = float(np.median(trailing_diffs))
+                if diffs[0] < 0.75 * trailing_median:
+                    return trailing_median
         return float(np.median(diffs))
 
-    def __init__(self, nx, ny, res, surface_config=None):
+    @staticmethod
+    def infer_dz_from_zlad(zlad, fallback):
+        """Backward-compatible wrapper for zlad-based dz inference."""
+        return GridModel.infer_vertical_step(zlad, fallback)
+
+    @staticmethod
+    def quantize_building_height(value, dz):
+        """Snap building heights to the vertical grid.
+
+        Heights smaller than one vertical grid cell are kept as a zero-height
+        building footprint so PALMPaint can show the same pre-discretized input
+        that will be written to the static driver.
+        """
+        if value is None:
+            return float(GridModel.FLOAT_FILL)
+
+        value = float(value)
+        if not np.isfinite(value) or value < 0.0:
+            return float(GridModel.FLOAT_FILL)
+        if value == 0.0:
+            return 0.0
+
+        step = float(dz) if float(dz) > 0.0 else 1.0
+        if value < step - 1e-9:
+            return 0.0
+        snapped = math.floor((value + 1e-9) / step) * step
+        return float(snapped)
+
+    @staticmethod
+    def quantize_terrain_height(value, dz):
+        """Discretize terrain height using PALM's all-or-nothing zt logic.
+
+        For constant vertical spacing, PALM marks a terrain cell as occupied
+        once the continuous terrain reaches the scalar height of that cell.
+        The effective terrain top therefore lies on the corresponding zw level,
+        which is equivalent to a half-cell threshold before snapping upward.
+        """
+        if value is None:
+            return 0.0
+
+        value = float(value)
+        if not np.isfinite(value) or value <= 0.0:
+            return 0.0
+
+        step = float(dz) if float(dz) > 0.0 else 1.0
+        snapped = math.floor((value + 0.5 * step + 1e-9) / step) * step
+        return max(0.0, float(snapped))
+
+    def __init__(self, nx, ny, res, dz=None, surface_config=None):
         """
         Parameters
         ----------
@@ -54,12 +113,15 @@ class GridModel:
             Number of grid cells in x and y direction.
         res : float
             Physical grid width in metres (dx = dy = res).
+        dz : float, optional
+            Vertical grid spacing in metres. Defaults to ``res``.
         surface_config : dict, optional
             Configuration for vegetation types and categories.
         """
         self.nx  = nx
         self.ny  = ny
         self.res = res  # physical resolution in metres
+        self.dz = float(dz) if dz is not None else float(res)
         self.show_grid_lines = True
         self.surface_config = surface_config
 
@@ -205,7 +267,7 @@ class GridModel:
         zlad = rv.get("zlad")
         nz_idx = np.where(col_lad > 0)[0]
         max_height = float(zlad[nz_idx[-1]]) if (zlad is not None and nz_idx.size > 0) else None
-        dz = self.infer_dz_from_zlad(zlad, self.res)
+        dz = self.infer_dz_from_zlad(zlad, self.dz)
         positive_lad = col_lad[col_lad > 0]
 
         bad_vol = rv.get("bad")
@@ -257,12 +319,22 @@ class GridModel:
                                             "bad": None, "tree_id": None}
             return
 
-        dz = float(self.res)
+        dz = float(self.dz)
         max_height = max(t["tree_height"] for t in self.tree_instances)
         nz = int(np.ceil(max_height / dz)) + 1
         if has_loaded:
             nz = max(nz, self._loaded_rv["lad"].shape[0])
-        zlad = np.array([k * dz for k in range(nz)], dtype=np.float32)
+        loaded_zlad = self._loaded_rv.get("zlad") if has_loaded else None
+        if loaded_zlad is not None:
+            loaded_zlad = np.asarray(loaded_zlad, dtype=np.float32)
+        if loaded_zlad is not None and loaded_zlad.size > 0:
+            if loaded_zlad.size >= nz:
+                zlad = loaded_zlad[:nz].copy()
+            else:
+                extra = loaded_zlad[-1] + dz * np.arange(1, nz - loaded_zlad.size + 1, dtype=np.float32)
+                zlad = np.concatenate([loaded_zlad, extra]).astype(np.float32, copy=False)
+        else:
+            zlad = ((np.arange(nz, dtype=np.float32) + 0.5) * dz).astype(np.float32, copy=False)
 
         lad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
         bad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
@@ -315,7 +387,7 @@ class GridModel:
                 }
 
             from base.tree_generator_core import generate_tree, TreeParams, Grid
-            _grid = Grid(dx=dz, dy=dz, dz=dz, pad_xy=0.0, pad_z=0.0)
+            _grid = Grid(dx=self.res, dy=self.res, dz=dz, pad_xy=0.0, pad_z=0.0)
             try:
                 result = generate_tree(TreeParams(**gp), _grid)
             except Exception:
@@ -374,7 +446,7 @@ class GridModel:
     # Pixel-level access
     # ------------------------------------------------------------------
 
-    def set_pixel(self, row, col, **kwargs):
+    def set_pixel(self, row, col, quantize=True, **kwargs):
         """Write data layer values for a single pixel.
 
         Unknown keys (e.g. 'color', 'outline', 'id') are silently ignored,
@@ -390,11 +462,82 @@ class GridModel:
             "building_height": self.building_height,
             "building_type":   self.building_type,
         }
+        building_keys = {"building_id", "building_height", "building_type"}
+        if any(key in kwargs for key in building_keys):
+            building_id = kwargs.get("building_id", self.building_id[row, col])
+            building_height = kwargs.get("building_height", self.building_height[row, col])
+            building_type = kwargs.get("building_type", self.building_type[row, col])
+
+            if quantize:
+                stored_height = self.quantize_building_height(building_height, self.dz)
+            else:
+                try:
+                    stored_height = float(building_height)
+                except (TypeError, ValueError):
+                    stored_height = self.FLOAT_FILL
+
+            if stored_height <= self.FLOAT_FILL or not np.isfinite(stored_height):
+                self.building_id[row, col] = self.INT_FILL
+                self.building_height[row, col] = self.FLOAT_FILL
+                self.building_type[row, col] = self.INT_FILL
+            else:
+                self.building_id[row, col] = int(building_id)
+                self.building_height[row, col] = stored_height
+                self.building_type[row, col] = int(building_type)
+
         for key, value in kwargs.items():
+            if key in building_keys:
+                continue
             if key in layer_map:
-                layer_map[key][row, col] = value
+                if key == "zt":
+                    if quantize:
+                        layer_map[key][row, col] = self.quantize_terrain_height(value, self.dz)
+                    else:
+                        try:
+                            layer_map[key][row, col] = float(value)
+                        except (TypeError, ValueError):
+                            layer_map[key][row, col] = 0.0
+                else:
+                    layer_map[key][row, col] = value
             elif key == "water_temperature":
                 self.water_pars[0, row, col] = value
+
+    def discretize_all_heights(self):
+        """Apply PALMPaint's dz-based discretization rules to the whole model."""
+        old_zt = self.zt.copy()
+        old_building_height = self.building_height.copy()
+        old_building_id = self.building_id.copy()
+        old_building_type = self.building_type.copy()
+
+        terrain_quantizer = np.vectorize(lambda value: self.quantize_terrain_height(value, self.dz), otypes=[np.float32])
+        building_quantizer = np.vectorize(lambda value: self.quantize_building_height(value, self.dz), otypes=[np.float32])
+
+        self.zt[:, :] = terrain_quantizer(self.zt)
+        self.building_height[:, :] = building_quantizer(self.building_height)
+
+        removed_mask = self.building_height <= self.FLOAT_FILL
+        self.building_id[removed_mask] = self.INT_FILL
+        self.building_type[removed_mask] = self.INT_FILL
+
+        terrain_changed = int(np.count_nonzero(np.abs(self.zt - old_zt) > 1e-6))
+        building_changed = int(
+            np.count_nonzero(np.abs(self.building_height - old_building_height) > 1e-6)
+        )
+        cleared_buildings = int(
+            np.count_nonzero(
+                (old_building_height > self.FLOAT_FILL) & (self.building_height <= self.FLOAT_FILL)
+            )
+        )
+        id_changed = int(np.count_nonzero(self.building_id != old_building_id))
+        type_changed = int(np.count_nonzero(self.building_type != old_building_type))
+
+        return {
+            "terrain_changed": terrain_changed,
+            "building_height_changed": building_changed,
+            "cleared_buildings": cleared_buildings,
+            "building_id_changed": id_changed,
+            "building_type_changed": type_changed,
+        }
 
     def get_pixel(self, row, col):
         """Return all data layer values for one pixel as a plain dict."""
@@ -584,11 +727,11 @@ class GridModel:
         }
 
     @classmethod
-    def from_legacy_dict(cls, pixel_dict, nx, ny, res, surface_config=None):
+    def from_legacy_dict(cls, pixel_dict, nx, ny, res, dz=None, surface_config=None, quantize=False):
         """Build a GridModel from the {(row, col): pixel_dict} format
         returned by load_sd.Load().
         """
-        model = cls(nx, ny, res, surface_config)
+        model = cls(nx, ny, res, dz, surface_config)
         for (row, col), data in pixel_dict.items():
-            model.set_pixel(row, col, **data)
+            model.set_pixel(row, col, quantize=quantize, **data)
         return model

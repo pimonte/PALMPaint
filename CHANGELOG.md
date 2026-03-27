@@ -8,14 +8,43 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.4.2-alpha] — dev branch (unreleased)
+
+### Added
+- Separate vertical grid spacing `dz` (independent from horizontal `res`): configurable in the new-project dialog, stored in and loaded from the NetCDF file, exposed throughout the application
+- `buildings_3d` export: optional 3D voxel building layer in the NetCDF output (toggle via *Extras → Export buildings_3d*); buildings below `dz/2` are replaced with asphalt and a warning is shown
+- "Discretize Project to dz" menu action: re-snaps all terrain and building heights of the whole project to the current `dz` raster in one step
+- Lower-left origin mode for the coordinate display: checking the checkbox in the *Change Origin* dialog switches the meter readout from local grid coordinates (0/0) to absolute projected coordinates offset by `origin_x` / `origin_y`
+- `x` / `y` coordinate variables and CRS grid-mapping attributes (`grid_mapping`) are now written to all spatial variables in the saved NetCDF file
+- Building height spinbox step and tree height spinbox step now use `dz` instead of `res`
+
+### Changed
+- `GridModel` now stores `dz` as a first-class attribute; `set_pixel()` applies `dz`-based quantization for terrain and building heights by default (can be disabled with `quantize=False`)
+- `quantize_building_height()` and `quantize_terrain_height()` extracted as public static methods on `GridModel`
+- `infer_vertical_step()` replaces the old `infer_dz_from_zlad()` internals with improved leading-half-step detection
+- `Save()` signature extended: accepts `dz`, `georef`, and `export_buildings_3d`; returns a summary dict with deleted/replaced building counts
+- `Load()` now returns `(grid, nx, ny, res, dz, origin, resolved_vegetation, georef)` and reads `dz` and the full `GeoReference` from the file
+- `BUILDING_ID_FILL` changed from `-127` to `-9999` to avoid ambiguity with `INT_FILL`
+- Grid-spacing Labelframe in the new-project dialog renamed from "Grid Width" to "Grid Spacing" and extended with a `dz` entry field
+- Sidebar label now shows both horizontal `res` and vertical `dz`
+- Tree generator receives `(res, res, dz)` grid config instead of a single resolution value
+- `zlad` generation for tree instances now re-uses the loaded zlad array as a base and extends it only if needed
+
+### Fixed
+- Several bugs in the Tree Generator (crown geometry edge cases and generator preset handling)
+
+---
+
 ## [0.4.1-alpha] — dev branch (unreleased)
 
 ### Added
 - Autosave: project is periodically saved to rotating autosave slots; slot count and interval are configurable via the autosave options dialog
 - Keyboard shortcuts for Save (`Ctrl+S`) and Save As (`Ctrl+Shift+S`)
+- Dedicated georeferencing module with UTM-based lat/lon <-> projected-meter conversion, CRS metadata handling, and PALM-style `crs` / `lat` / `lon` / `E_UTM` / `N_UTM` output
 
 ### Changed
 - Improved single-tree canvas representation: overlay cells now use a clearly inset rectangle with Beer-Lambert stipple shading so they are visually distinct from the grid lines at all zoom levels
+- Origin editing now uses the project CRS and keeps geographic and projected coordinates in sync
 
 ### Fixed
 - Several bugs in the Tree Generator (crown geometry edge cases and generator preset handling)

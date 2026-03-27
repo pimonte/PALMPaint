@@ -87,12 +87,12 @@ class TreeGeneratorDialog(tk.Toplevel):
         "Apply to Brush".
     """
 
-    def __init__(self, parent: tk.Widget, on_apply_callback=None, get_resolution=None):
+    def __init__(self, parent: tk.Widget, on_apply_callback=None, get_grid_config=None):
         super().__init__(parent)
         self.title("Tree Generator (alpha)")
         self.resizable(True, True)
         self.on_apply_callback = on_apply_callback
-        self._get_resolution = get_resolution  # callable () -> float, or None for 1.0
+        self._get_grid_config = get_grid_config  # callable () -> (dx, dy, dz), or None
         self._colorbar = None  # shared colorbar, recreated on each preview
 
         # Suppress destroy — just hide
@@ -357,9 +357,12 @@ class TreeGeneratorDialog(tk.Toplevel):
             return
         try:
             params = self._build_tree_params()
-            res = self._get_resolution() if self._get_resolution is not None else 1.0
-            self._preview_frame.configure(text=f"Preview ({res:g} m resolution)")
-            grid = Grid(dx=res, dy=res, dz=res, pad_xy=0.0, pad_z=0.0)
+            if self._get_grid_config is not None:
+                dx, dy, dz = self._get_grid_config()
+            else:
+                dx = dy = dz = 1.0
+            self._preview_frame.configure(text=f"Preview (dx={dx:g} m, dz={dz:g} m)")
+            grid = Grid(dx=dx, dy=dy, dz=dz, pad_xy=0.0, pad_z=0.0)
             result = generate_tree(params, grid)
         except Exception as exc:
             for ax in self._axes:
@@ -423,15 +426,17 @@ class TreeGeneratorDialog(tk.Toplevel):
         import numpy as np  # noqa: F811  (already imported above, harmless)
 
         # Extents in metres (cell edges) for imshow
-        ext_xy = [x[0] - res/2, x[-1] + res/2, y[0] - res/2, y[-1] + res/2]
-        ext_zx = [x[0] - res/2, x[-1] + res/2, z[0] - res/2, z[-1] + res/2]
-        ext_zy = [y[0] - res/2, y[-1] + res/2, z[0] - res/2, z[-1] + res/2]
+        ext_xy = [x[0] - dx / 2.0, x[-1] + dx / 2.0, y[0] - dy / 2.0, y[-1] + dy / 2.0]
+        ext_zx = [x[0] - dx / 2.0, x[-1] + dx / 2.0, z[0] - dz / 2.0, z[-1] + dz / 2.0]
+        ext_zy = [y[0] - dy / 2.0, y[-1] + dy / 2.0, z[0] - dz / 2.0, z[-1] + dz / 2.0]
 
         # Axis limits with 1-cell padding on every side
-        buf = res
-        x_lim = [x[0]  - res/2 - buf, x[-1] + res/2 + buf]
-        y_lim = [y[0]  - res/2 - buf, y[-1] + res/2 + buf]
-        z_lim = [max(0.0, z[0] - res/2 - buf), z[-1] + res/2 + buf]
+        x_buf = dx
+        y_buf = dy
+        z_buf = dz
+        x_lim = [x[0] - dx / 2.0 - x_buf, x[-1] + dx / 2.0 + x_buf]
+        y_lim = [y[0] - dy / 2.0 - y_buf, y[-1] + dy / 2.0 + y_buf]
+        z_lim = [max(0.0, z[0] - dz / 2.0 - z_buf), z[-1] + dz / 2.0 + z_buf]
 
         titles = ["Max-Z projection", "Z-X slice (centre)", "Z-Y slice (centre)"]
 

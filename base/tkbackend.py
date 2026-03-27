@@ -383,7 +383,7 @@ class TkCanvasBackend:
 
         if lad is not None and np.any(lad > 0):
             zlad = rv.get("zlad")
-            dz = self.model.infer_dz_from_zlad(zlad, self.model.res)
+            dz = self.model.infer_dz_from_zlad(zlad, self.model.dz)
             lai_2d = np.where(lad > 0, lad, 0.0).sum(axis=0) * dz
             mask2d = lai_2d > 0
         elif tree_id is not None and np.any(tree_id > 0):
