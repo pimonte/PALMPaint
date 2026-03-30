@@ -103,14 +103,14 @@ def Load(filename="output.nc"):
                 z_coords = z_coords.filled(fv)
             z_coords = np.asarray(z_coords, dtype=np.float32)
 
-        def get_data(var_name):
-            if var_name in nc_file.variables:
-                var = nc_file.variables[var_name][:]
-                if hasattr(var, "filled"):
-                    fv = getattr(nc_file.variables[var_name], "_FillValue", -127)
-                    return var.filled(fv)
-                return var
-            return np.full((ny, nx), -127)
+        # def get_data(var_name):
+        #     if var_name in nc_file.variables:
+        #         var = nc_file.variables[var_name][:]
+        #         if hasattr(var, "filled"):
+        #             fv = getattr(nc_file.variables[var_name], "_FillValue", -127)
+        #             return var.filled(fv)
+        #         return var
+        #     return np.full((ny, nx), -127)
 
         # --- 2D fields ---
         veg = get_2d_data(nc_file, "vegetation_type", ny, nx, fill_value=-127, dtype=np.int8)
@@ -135,6 +135,7 @@ def Load(filename="output.nc"):
             zlad = zlad.astype(np.float32)
 
         stored_dz = getattr(nc_file, "palmpaint_dz", None)
+        source_buildings_3d = get_3d_data(nc_file, "buildings_3d", ny, nx, dtype=np.int8)
 
         if z_coords is not None:
             dz = GridModel.infer_vertical_step(z_coords, res)
@@ -155,6 +156,11 @@ def Load(filename="output.nc"):
             "bad": bad,
             "tree_id": tree_id,
             "source_has_buildings_3d": "buildings_3d" in nc_file.variables,
+            "source_buildings_3d": None if source_buildings_3d is None else np.array(source_buildings_3d, copy=True),
+            "source_buildings_3d_z": None if z_coords is None else np.array(z_coords, copy=True),
+            "source_buildings_2d": np.array(bldg_height, copy=True),
+            "source_building_id": np.array(bldg_id, copy=True),
+            "source_building_type": np.array(bldg_type, copy=True),
         }
 
         grid = {}

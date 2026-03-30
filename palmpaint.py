@@ -51,7 +51,7 @@ class PaintApplication(framework.Framework):
     
 
     tool_bar_functions = (
-        "vegetation", "pavement", "water", "building", "single_tree")
+        "vegetation", "pavement", "water", "building", "eraser", "single_tree")
     height_tool_bar_functions = ("zt_set", "zt_raise", "zt_lower")
     soil_tool_bar_functions = ()
     selected_tool_bar_function = tool_bar_functions[0]
@@ -198,6 +198,29 @@ class PaintApplication(framework.Framework):
         kwargs.pop("color", None)
         kwargs.pop("outline", None)
         self.model.set_pixel(row, col, **kwargs)
+
+    def _reset_pixel_payload(self):
+        """Return a fill-value payload that clears one surface/building cell."""
+        fi = self.model.INT_FILL
+        ff = self.model.FLOAT_FILL
+        return {
+            "vegetation_type": fi,
+            "soil_type": fi,
+            "pavement_type": fi,
+            "water_type": fi,
+            "building_id": fi,
+            "building_height": ff,
+            "building_type": fi,
+        }
+
+    def _cell_has_building(self, row, col):
+        return (
+            self.model.building_id[row, col] > 0
+            or self.model.building_height[row, col] > self.model.FLOAT_FILL
+        )
+
+    def _cell_has_tree_data(self, row, col):
+        return self.model.has_lad_at(row, col)
             
     def _apply_brush(self, pixel_data, *, water_temp=None):
         """Reset all surface layers to fill values, then apply pixel_data to
@@ -213,13 +236,7 @@ class PaintApplication(framework.Framework):
             When given, calls set_water_parameter(0, row, col, water_temp).
             When None (default), calls clear_water_parameters instead.
         """
-        fi = self.model.INT_FILL
-        ff = self.model.FLOAT_FILL
-        reset = dict(
-            vegetation_type=fi, soil_type=fi,
-            pavement_type=fi, water_type=fi,
-            building_id=fi, building_height=ff, building_type=fi,
-        )
+        reset = self._reset_pixel_payload()
         reset.update(pixel_data)
         row, col = self.active_cell
         affected = [
@@ -263,6 +280,10 @@ class PaintApplication(framework.Framework):
             building_type=self.building_type,
         ))
 
+    def eraser(self):
+        """Reset the current brush area to fill values."""
+        self._apply_brush({})
+
     def single_tree(self):
         """Place a single resolved tree at the active cell using palm_extinction."""
         from base.tree_species import SHAPE_DEFAULT_K
@@ -287,7 +308,7 @@ class PaintApplication(framework.Framework):
                 "palm_extinction_k": SHAPE_DEFAULT_K.get(self.selected_crown_shape, 0.6),
                 "bad_lad_ratio":     self.selected_bad_lad_ratio,
             }
-        self.model.add_tree(
+        placement = self.model.add_tree(
             row, col,
             tree_height=self.selected_tree_height,
             crown_diameter=self.selected_crown_diameter,
@@ -297,6 +318,26 @@ class PaintApplication(framework.Framework):
             generator_params=gen_params,
         )
         self.backend.redraw_tree_overlay()
+        clipped_voxels = int(placement.get("clipped_voxels", 0))
+        placed_voxels = int(placement.get("placed_voxels", 0))
+        if clipped_voxels > 0:
+            if placed_voxels > 0:
+                messagebox.showwarning(
+                    "Tree clipped by building",
+                    (
+                        f"Parts of the tree crown overlapped a building. "
+                        f"{clipped_voxels} LAD/BAD voxel(s) inside building volume were removed, "
+                        "and only the vegetation above the building was kept."
+                    ),
+                )
+            else:
+                messagebox.showwarning(
+                    "Tree fully inside building",
+                    (
+                        "The tree overlapped only building volume, so no LAD/BAD voxels were placed. "
+                        "Only vegetation above buildings can be written."
+                    ),
+                )
 
     def single_tree_options(self):
         """Display species selector and tree parameter spinboxes in the top bar."""
@@ -592,23 +633,14 @@ class PaintApplication(framework.Framework):
         if self.active_view == "soil":
             for (row, col) in self.pixels.keys():
                 is_water = self.model.water_type[row, col] > self.model.INT_FILL
-                is_building = (
-                    self.model.building_id[row, col] > self.model.INT_FILL
-                    or self.model.building_height[row, col] > 0.0
-                )
+                is_building = self._cell_has_building(row, col)
                 if is_water or is_building:
                     continue
                 self.update_pixel(row, col, soil_type=self.selected_soil_type)
             self.backend.update_grid(self.nx, self.ny, self.res)
             return
 
-        fi = self.model.INT_FILL
-        ff = self.model.FLOAT_FILL
-        reset = dict(
-            vegetation_type=fi, soil_type=fi,
-            pavement_type=fi, water_type=fi,
-            building_id=fi, building_height=ff, building_type=fi,
-        )
+        reset = self._reset_pixel_payload()
 
         if self.selected_tool_bar_function == "vegetation":
             veg_type = self.selected_vegetation_type
@@ -616,6 +648,8 @@ class PaintApplication(framework.Framework):
             soil_type = veg_def.get("soil_type", self.surface_config["soil"]["default_type"])
             pixel_data = {**reset, "vegetation_type": veg_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
+                if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
+                    continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
         elif self.selected_tool_bar_function == "pavement":
@@ -624,12 +658,16 @@ class PaintApplication(framework.Framework):
             soil_type = pav_def.get("soil_type", self.surface_config["soil"]["default_type"])
             pixel_data = {**reset, "pavement_type": pavement_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
+                if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
+                    continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
         elif self.selected_tool_bar_function == "water":
             self.update_water_temperature()
             pixel_data = {**reset, "water_type": self.selected_water_type}
             for (row, col) in self.pixels.keys():
+                if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
+                    continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.set_water_parameter(0, row, col, self.selected_water_temperature)
         elif self.selected_tool_bar_function == "building":
@@ -639,6 +677,10 @@ class PaintApplication(framework.Framework):
                           "building_type": self.building_type}
             for (row, col) in self.pixels.keys():
                 self.update_pixel(row, col, **pixel_data)
+                self.model.clear_water_parameters(row, col)
+        elif self.selected_tool_bar_function == "eraser":
+            for (row, col) in self.pixels.keys():
+                self.update_pixel(row, col, **reset)
                 self.model.clear_water_parameters(row, col)
         self.backend.update_grid(self.nx, self.ny, self.res)
         
@@ -728,8 +770,228 @@ class PaintApplication(framework.Framework):
             ),
         )
 
-    def _save_project_to_file(self, filename="quicksave", *, show_export_warnings=True):
+    def run_validation(self):
+        """Run surface-layer consistency checks and show results in a dialog."""
+        result = self.model.validate(georef=self.georef)
+        # Always push the latest mask to the backend so it is ready to display.
+        self.backend.update_error_overlay(result["invalid_mask"])
+        if result["valid"]:
+            # Clear any stale overlay when the project is clean.
+            self.backend.set_error_overlay_visible(False)
+            self._error_overlay_var.set(False)
+            messagebox.showinfo("Validation", "No issues found. The project is consistent.")
+        else:
+            self.backend.set_error_overlay_visible(True)
+            self._error_overlay_var.set(True)
+            lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
+            messagebox.showwarning(
+                "Validation \u2014 issues found",
+                f"{len(result['violations'])} issue(s) detected:\n\n{lines}",
+            )
+
+    def clean_static_driver(self):
+        """Apply automatic cleanup rules for common static-driver issues."""
+        proceed = messagebox.askyesno(
+            "Clean Static Driver",
+            (
+                "Apply automatic cleanup rules to the current project?\n\n"
+                "This repairs invalid zt values, removes LAD/BAD inside buildings, clears "
+                "invalid surface and soil assignments, deletes orphaned water parameters, "
+                "fills missing soil types from the surface configuration, and assigns automatic "
+                "building IDs where building_type is set without an ID."
+            ),
+        )
+        if not proceed:
+            return
+
+        self.save_state()
+        summary = self.model.clean_static_driver()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+        self.backend.redraw_tree_overlay()
+        result = self.model.validate(georef=self.georef)
+        self.backend.update_error_overlay(result["invalid_mask"])
+        self.backend.set_error_overlay_visible(not result["valid"])
+        self._error_overlay_var.set(not result["valid"])
+        self.dirty = True
+
+        lines = [
+            f"zt cells repaired to 0.0: {summary['zt_repaired']}",
+            f"LAD/BAD voxels cleared in buildings: {summary['vegetation_voxels_cleared_in_buildings']}",
+            f"Building columns with LAD/BAD cleanup: {summary['vegetation_columns_cleared_in_buildings']}",
+            f"Tree IDs cleared in buildings: {summary['tree_ids_cleared_in_buildings']}",
+            f"Soil cells cleared under water/buildings: {summary['soil_cleared_under_water_or_buildings']}",
+            f"Building cells with surface types cleared: {summary['surface_types_cleared_on_buildings']}",
+            f"Water parameter columns cleared outside water: {summary['water_pars_cleared_outside_water']}",
+            f"Soil cells filled from surface_config: {summary['soil_filled_from_surface_config']}",
+            f"Automatic building IDs assigned: {summary['building_ids_auto_assigned']}",
+        ]
+        if result["valid"]:
+            lines.append("")
+            lines.append("Validation after cleanup: no issues found.")
+        else:
+            lines.append("")
+            lines.append(f"Validation after cleanup: {len(result['violations'])} issue(s) remain.")
+
+        messagebox.showinfo("Static Driver Cleaned", "\n".join(lines))
+
+    def _run_preview_apply_tool(
+        self,
+        title,
+        preview_result,
+        apply_callback,
+        preview_lines,
+        apply_lines,
+        *,
+        confirm=True,
+    ):
+        if confirm and not messagebox.askyesno(title, "\n".join(preview_lines)):
+            return
+
+        self.save_state()
+        applied = apply_callback()
+        summary = applied["summary"]
+        self.backend.update_grid(self.nx, self.ny, self.res)
+        self.backend.redraw_tree_overlay()
+        result = self.model.validate(georef=self.georef)
+        self.backend.update_error_overlay(result["invalid_mask"])
+        self.backend.set_error_overlay_visible(not result["valid"])
+        self._error_overlay_var.set(not result["valid"])
+        self.refresh_coordinate_labels()
+        self.dirty = True
+
+        lines = apply_lines(summary, result)
+        messagebox.showinfo(f"{title} Applied", "\n".join(lines))
+
+    def run_filter_sweep_tool(self):
+        """Preview and optionally apply PALM-style hole/cavity filtering."""
+        preview = self.model.preview_filter_sweep()
+        summary = preview["summary"]
+        self.backend.update_error_overlay(preview["preview_mask"])
+        self.backend.set_error_overlay_visible(True)
+        self._error_overlay_var.set(True)
+
+        messagebox.showinfo(
+            "Filter Sweep Preview",
+            (
+                "The preview overlay is now highlighting the cells that would be changed.\n\n"
+                f"Changed cells: {summary['preview_changed_cells']}\n"
+                f"zt cells repaired to 0.0: {summary['zt_repaired']}\n"
+                f"1-cell holes to fill: {summary['hole_fills']}\n"
+                f"Hole-filter sweeps: {summary['hole_fill_sweeps']}\n"
+                f"Narrow cavities to fill: {summary['narrow_cavities_filled']}\n"
+                f"Narrow-cavity voxels to fill: {summary['narrow_cavity_voxels_filled']}"
+            ),
+        )
+
+        if not messagebox.askyesno(
+            "Filter Sweep",
+            "Apply the highlighted filter-sweep changes to the current project?",
+        ):
+            return
+
+        self._run_preview_apply_tool(
+            "Filter Sweep",
+            preview,
+            self.model.apply_filter_sweep,
+            ["Applying filter sweep..."],
+            lambda summary, result: [
+                f"Changed cells: {summary['preview_changed_cells']}",
+                f"zt cells repaired to 0.0: {summary['zt_repaired']}",
+                f"1-cell holes filled: {summary['hole_fills']}",
+                f"Hole-filter sweeps: {summary['hole_fill_sweeps']}",
+                f"Narrow cavities filled: {summary['narrow_cavities_filled']}",
+                f"Narrow-cavity voxels filled: {summary['narrow_cavity_voxels_filled']}",
+                f"New building cells created: {summary.get('new_building_cells', 0)}",
+                "",
+                "Validation after filter sweep: no issues found."
+                if result["valid"]
+                else f"Validation after filter sweep: {len(result['violations'])} issue(s) remain.",
+            ],
+            confirm=False,
+        )
+
+    def run_split_building_ids_tool(self):
+        """Preview and optionally split disconnected building footprints to unique IDs."""
+        preview = self.model.preview_split_building_ids()
+        summary = preview["summary"]
+        preview_lines = [
+            "Preview of building_id split:",
+            "",
+            f"Disconnected building_id groups to split: {summary['building_ids_split_groups']}",
+            f"Additional components to re-ID: {summary['building_ids_split_components']}",
+            f"Cells receiving new IDs: {summary['building_ids_split_cells']}",
+            "",
+            "Apply these changes to the current project?",
+        ]
+        self._run_preview_apply_tool(
+            "Split Building IDs",
+            preview,
+            self.model.apply_split_building_ids,
+            preview_lines,
+            lambda summary, result: [
+                f"Disconnected building_id groups split: {summary['building_ids_split_groups']}",
+                f"Additional components reassigned: {summary['building_ids_split_components']}",
+                f"Cells receiving new IDs: {summary['building_ids_split_cells']}",
+                "",
+                "Validation after ID split: no issues found."
+                if result["valid"]
+                else f"Validation after ID split: {len(result['violations'])} issue(s) remain.",
+            ],
+        )
+
+    def run_align_building_terrain_tool(self):
+        """Preview and optionally align terrain within building groups."""
+        preview = self.model.preview_align_building_terrain()
+        summary = preview["summary"]
+        preview_lines = [
+            "Preview of terrain alignment by building_id:",
+            "",
+            f"zt cells repaired to 0.0: {summary['zt_repaired']}",
+            f"Building groups to terrain-adjust: {summary['terrain_adjusted_groups']}",
+            f"Cells to terrain-adjust: {summary['terrain_adjusted_cells']}",
+            "",
+            "Apply these changes to the current project?",
+        ]
+        self._run_preview_apply_tool(
+            "Align Building Terrain",
+            preview,
+            self.model.apply_align_building_terrain,
+            preview_lines,
+            lambda summary, result: [
+                f"zt cells repaired to 0.0: {summary['zt_repaired']}",
+                f"Building groups terrain-adjusted: {summary['terrain_adjusted_groups']}",
+                f"Cells terrain-adjusted: {summary['terrain_adjusted_cells']}",
+                "",
+                "Validation after terrain alignment: no issues found."
+                if result["valid"]
+                else f"Validation after terrain alignment: {len(result['violations'])} issue(s) remain.",
+            ],
+        )
+
+    def _save_project_to_file(
+        self,
+        filename="quicksave",
+        *,
+        show_export_warnings=True,
+        validate_before_save=True,
+    ):
         """Persist the current project to a NetCDF file."""
+        if (
+            validate_before_save
+            and getattr(self, "_validate_before_save_var", None)
+            and self._validate_before_save_var.get()
+        ):
+            result = self.model.validate(georef=self.georef)
+            if not result["valid"]:
+                lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
+                proceed = messagebox.askokcancel(
+                    "Validation \u2014 issues found",
+                    f"{len(result['violations'])} issue(s) detected:\n\n{lines}\n\n"
+                    "Save anyway?",
+                )
+                if not proceed:
+                    return
+
         save_summary = Save(
             self.model.to_legacy_dict(),
             self.original_res,
@@ -798,7 +1060,11 @@ class PaintApplication(framework.Framework):
         try:
             if self.dirty and self.autosave_file_count > 0:
                 filename = self._autosave_filename(self._autosave_next_slot)
-                self._save_project_to_file(filename, show_export_warnings=False)
+                self._save_project_to_file(
+                    filename,
+                    show_export_warnings=False,
+                    validate_before_save=False,
+                )
                 self._autosave_next_slot = (
                     self._autosave_next_slot + 1
                 ) % self.autosave_file_count
@@ -1635,6 +1901,23 @@ class PaintApplication(framework.Framework):
             variable=self._export_buildings_3d_var,
             command=lambda: self._set_export_buildings_3d(
                 self._export_buildings_3d_var.get(), mark_dirty=True
+            ),
+        )
+        extras_menu.add_separator()
+        extras_menu.add_command(label="Validate", command=self.run_validation)
+        extras_menu.add_command(label="Clean Static Driver", command=self.clean_static_driver)
+        extras_menu.add_command(label="Filter Sweep", command=self.run_filter_sweep_tool)
+        self._validate_before_save_var = tk.BooleanVar(value=True)
+        extras_menu.add_checkbutton(
+            label="Validate before Save",
+            variable=self._validate_before_save_var,
+        )
+        self._error_overlay_var = tk.BooleanVar(value=False)
+        extras_menu.add_checkbutton(
+            label="Show Error Overlay",
+            variable=self._error_overlay_var,
+            command=lambda: self.backend.set_error_overlay_visible(
+                self._error_overlay_var.get()
             ),
         )
 

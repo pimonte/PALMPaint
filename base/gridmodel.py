@@ -66,9 +66,10 @@ class GridModel:
     def quantize_building_height(value, dz):
         """Snap building heights to the vertical grid.
 
-        Heights smaller than one vertical grid cell are kept as a zero-height
-        building footprint so PALMPaint can show the same pre-discretized input
-        that will be written to the static driver.
+        Buildings use the same half-cell threshold as PALM's 3-D voxelisation:
+        values below ``dz/2`` stay as a zero-height footprint (which still
+        becomes a voxel at ``z=0`` in ``buildings_3d``), while larger values
+        snap to the nearest dz-based top height.
         """
         if value is None:
             return float(GridModel.FLOAT_FILL)
@@ -80,10 +81,8 @@ class GridModel:
             return 0.0
 
         step = float(dz) if float(dz) > 0.0 else 1.0
-        if value < step - 1e-9:
-            return 0.0
-        snapped = math.floor((value + 1e-9) / step) * step
-        return float(snapped)
+        snapped = math.floor((value + 0.5 * step + 1e-9) / step) * step
+        return max(0.0, float(snapped))
 
     @staticmethod
     def quantize_terrain_height(value, dz):
@@ -125,10 +124,17 @@ class GridModel:
         self.show_grid_lines = True
         self.surface_config = surface_config
 
-        # Default: bare soil everywhere
+        # Default: bare soil everywhere — derive types from surface_config when available
+        _sc = surface_config or {}
+        _veg_default  = _sc.get("vegetation", {}).get("default_type", 1)
+        _soil_default = (_sc.get("vegetation", {})
+                           .get("types", {})
+                           .get(_veg_default, {})
+                           .get("soil_type", _sc.get("soil", {}).get("default_type", 1)))
+
         self.zt = np.full((ny, nx), 0.0, dtype=np.float32)
-        self.vegetation_type = np.full((ny, nx), 1,              dtype=np.int8)
-        self.soil_type       = np.full((ny, nx), 1,              dtype=np.int8)
+        self.vegetation_type = np.full((ny, nx), _veg_default,  dtype=np.int8)
+        self.soil_type       = np.full((ny, nx), _soil_default, dtype=np.int8)
         self.pavement_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.water_type      = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.building_id     = np.full((ny, nx), self.INT_FILL,  dtype=np.int32)
@@ -212,8 +218,16 @@ class GridModel:
             "tree_type_id": int(tree_type_id),
             "generator_params": generator_params,
         })
+        tree_id = self.next_tree_id
         self.next_tree_id += 1
-        self._rebuild_resolved_vegetation()
+        clip_summary = self._rebuild_resolved_vegetation(track_tree_id=tree_id)
+        if clip_summary is not None and clip_summary["placed_voxels"] == 0:
+            self.tree_instances = [t for t in self.tree_instances if t["id"] != tree_id]
+            self._rebuild_resolved_vegetation()
+        return {
+            "tree_id": tree_id,
+            **(clip_summary or {"clipped_voxels": 0, "placed_voxels": 0}),
+        }
 
     def remove_tree_at(self, row, col):
         """Remove the tree whose trunk is at (row, col) and rebuild."""
@@ -246,6 +260,118 @@ class GridModel:
         if lad_vol is None:
             return False
         return bool(np.any(lad_vol[:, row, col] > 0))
+
+    def _resolved_vegetation_source_metadata(self):
+        """Return preserved source metadata for resolved vegetation volumes."""
+        source = self._loaded_rv if self._loaded_rv is not None else self.resolved_vegetation
+        if source is None:
+            return {}
+        keys = (
+            "source_has_buildings_3d",
+            "source_buildings_3d",
+            "source_buildings_3d_z",
+            "source_buildings_2d",
+            "source_building_id",
+            "source_building_type",
+        )
+        metadata = {}
+        for key in keys:
+            value = source.get(key)
+            metadata[key] = None if value is None else np.array(value, copy=True)
+        return metadata
+
+    def _building_volume_mask_from_z(self, z_coords):
+        """Return a boolean volume mask for building occupancy at the given z coordinates."""
+        z_coords = np.asarray(z_coords, dtype=np.float32)
+        if z_coords.size == 0:
+            return np.zeros((0, self.ny, self.nx), dtype=bool)
+
+        source = self.resolved_vegetation if self.resolved_vegetation is not None else self._loaded_rv
+        if source is None:
+            source = self._loaded_rv
+
+        source_buildings_3d = None if source is None else source.get("source_buildings_3d")
+        source_buildings_3d_z = None if source is None else source.get("source_buildings_3d_z")
+        if source_buildings_3d is not None and source_buildings_3d_z is not None:
+            occupied = np.asarray(source_buildings_3d) > 0
+            z3d = np.asarray(source_buildings_3d_z, dtype=np.float32)
+            occupied_columns = np.any(occupied, axis=0)
+            if not np.any(occupied_columns):
+                return np.zeros((z_coords.size, self.ny, self.nx), dtype=bool)
+            top_indices = np.argmax(occupied[::-1], axis=0)
+            top_indices = occupied.shape[0] - 1 - top_indices
+            top_z = z3d[top_indices]
+            return occupied_columns[np.newaxis, :, :] & (
+                z_coords[:, np.newaxis, np.newaxis] <= top_z[np.newaxis, :, :]
+            )
+
+        has_building_height = self.building_height > self.FLOAT_FILL
+        return has_building_height[np.newaxis, :, :] & (
+            z_coords[:, np.newaxis, np.newaxis] <= self.building_height[np.newaxis, :, :]
+        )
+
+    def _build_tree_generator_params(self, tree):
+        """Return generator params for a tree instance or placement request."""
+        gp = tree.get("generator_params")
+        if gp is not None:
+            return gp
+
+        h_tree = float(tree["tree_height"])
+        cd = float(tree["crown_diameter"])
+        ch_tree = float(tree.get("crown_height") or 0.6 * h_tree)
+        cr_ratio = ch_tree / cd if cd > 0.0 else 1.0
+        return {
+            "max_tree_height":   h_tree,
+            "crown_diameter":    cd,
+            "trunk_diameter":    float(tree.get("trunk_diameter") or 0.3),
+            "crown_shape":       1,
+            "crown_ratio":       cr_ratio,
+            "alpha":             5.0,
+            "beta":              3.0,
+            "lai":               float(tree["lai"]),
+            "lad_model":         "palm_extinction",
+            "palm_extinction_k": 0.6,
+            "bad_lad_ratio":     0.025,
+        }
+
+    def _iter_tree_voxels(self, tree, dz, nz):
+        """Yield generated global LAD/BAD voxels for one tree."""
+        tr = tree["row"]
+        tc = tree["col"]
+        gp = self._build_tree_generator_params(tree)
+
+        from base.tree_generator_core import generate_tree, TreeParams, Grid
+
+        _grid = Grid(dx=self.res, dy=self.res, dz=dz, pad_xy=0.0, pad_z=0.0)
+        try:
+            result = generate_tree(TreeParams(**gp), _grid)
+        except Exception:
+            yield (0, tr, tc, float(tree["lai"]) / dz if dz > 0 else float(tree["lai"]), 0.0)
+            return
+
+        lad_tree = result["lad"]
+        bad_tree = result["bad"]
+        z_tree = result["coords"]["z"]
+        nz_t, ny_t, nx_t = lad_tree.shape
+        cx_t = nx_t // 2
+        cy_t = ny_t // 2
+        for iz_t in range(nz_t):
+            z_val = z_tree[iz_t]
+            iz_g = int(z_val / dz)
+            if not (0 <= iz_g < nz):
+                continue
+            for iy_t in range(ny_t):
+                rr = tr - cy_t + iy_t
+                if not (0 <= rr < self.ny):
+                    continue
+                for ix_t in range(nx_t):
+                    cc = tc - cx_t + ix_t
+                    if not (0 <= cc < self.nx):
+                        continue
+                    v = lad_tree[iz_t, iy_t, ix_t]
+                    b = bad_tree[iz_t, iy_t, ix_t]
+                    if v > 0.0 or b > 0.0:
+                        yield (iz_g, rr, cc, float(v), float(b))
 
     def get_tree_info_at(self, row, col):
         """Return a dict with tree diagnostics for (row, col), or None if no lad.
@@ -306,7 +432,7 @@ class GridModel:
             tid[:, row, col] = 0
         self._rebuild_resolved_vegetation()
 
-    def _rebuild_resolved_vegetation(self):
+    def _rebuild_resolved_vegetation(self, track_tree_id=None):
         """Recompute lad/tree_id from tree_instances using an ellipsoid crown model."""
         has_loaded = (self._loaded_rv is not None
                       and self._loaded_rv.get("lad") is not None)
@@ -336,9 +462,12 @@ class GridModel:
         else:
             zlad = ((np.arange(nz, dtype=np.float32) + 0.5) * dz).astype(np.float32, copy=False)
 
+        building_volume = self._building_volume_mask_from_z(zlad)
         lad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
         bad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
         tree_id_arr = np.zeros((nz, self.ny, self.nx), dtype=np.int32)
+        tracked_clipped = set()
+        tracked_placed = set()
 
         # Merge externally-loaded base data into the arrays
         if has_loaded:
@@ -359,78 +488,33 @@ class GridModel:
                 bad[:nz_b][valid_b] = bad_src[valid_b]
 
         for tree in self.tree_instances:
-            tr = tree["row"]
-            tc = tree["col"]
             tid = tree["id"]
-            gp = tree.get("generator_params")
-
-            # --- Always use generate_tree() (palm_extinction) ---
-            # If no generator_params are stored (old data / compatibility), build
-            # a sensible default dict from the per-tree geometry attributes.
-            if gp is None:
-                h_tree   = float(tree["tree_height"])
-                cd       = float(tree["crown_diameter"])
-                ch_tree  = float(tree.get("crown_height") or 0.6 * h_tree)
-                cr_ratio = ch_tree / cd if cd > 0.0 else 1.0
-                gp = {
-                    "max_tree_height":   h_tree,
-                    "crown_diameter":    cd,
-                    "trunk_diameter":    float(tree.get("trunk_diameter") or 0.3),
-                    "crown_shape":       1,       # ellipsoid default
-                    "crown_ratio":       cr_ratio,
-                    "alpha":             5.0,
-                    "beta":              3.0,
-                    "lai":               float(tree["lai"]),
-                    "lad_model":         "palm_extinction",
-                    "palm_extinction_k": 0.6,
-                    "bad_lad_ratio":     0.025,
-                }
-
-            from base.tree_generator_core import generate_tree, TreeParams, Grid
-            _grid = Grid(dx=self.res, dy=self.res, dz=dz, pad_xy=0.0, pad_z=0.0)
-            try:
-                result = generate_tree(TreeParams(**gp), _grid)
-            except Exception:
-                # Degenerate fallback: write a single voxel at ground level
-                lad[0, tr, tc] += float(tree["lai"]) / dz if dz > 0 else float(tree["lai"])
-                tree_id_arr[0, tr, tc] = tid
-                continue
-
-            lad_tree = result["lad"]         # (nz_t, ny_t, nx_t)
-            bad_tree = result["bad"]         # (nz_t, ny_t, nx_t)
-            z_tree   = result["coords"]["z"] # 1-D cell-centre z coords
-            nz_t, ny_t, nx_t = lad_tree.shape
-            cx_t = nx_t // 2
-            cy_t = ny_t // 2
-            for iz_t in range(nz_t):
-                z_val = z_tree[iz_t]
-                # floor maps cell-centre z=(k+0.5)*dz correctly to layer index k
-                # (Python's round() uses banker's rounding and would skip odd layers)
-                iz_g = int(z_val / dz)
-                if not (0 <= iz_g < nz):
+            for iz_g, rr, cc, v, b in self._iter_tree_voxels(tree, dz, nz):
+                if building_volume[iz_g, rr, cc]:
+                    if tid == track_tree_id:
+                        tracked_clipped.add((iz_g, rr, cc))
                     continue
-                for iy_t in range(ny_t):
-                    rr = tr - cy_t + iy_t
-                    if not (0 <= rr < self.ny):
-                        continue
-                    for ix_t in range(nx_t):
-                        cc = tc - cx_t + ix_t
-                        if not (0 <= cc < self.nx):
-                            continue
-                        v = lad_tree[iz_t, iy_t, ix_t]
-                        b = bad_tree[iz_t, iy_t, ix_t]
-                        if v > 0.0:
-                            lad[iz_g, rr, cc] += v
-                            tree_id_arr[iz_g, rr, cc] = tid
-                        if b > 0.0:
-                            bad[iz_g, rr, cc] += b
+                if v > 0.0:
+                    lad[iz_g, rr, cc] += v
+                    tree_id_arr[iz_g, rr, cc] = tid
+                if b > 0.0:
+                    bad[iz_g, rr, cc] += b
+                if tid == track_tree_id:
+                    tracked_placed.add((iz_g, rr, cc))
 
         self.resolved_vegetation = {
             "zlad": zlad,
             "lad": lad,
             "bad": bad,
             "tree_id": tree_id_arr,
+            **self._resolved_vegetation_source_metadata(),
         }
+        if track_tree_id is not None:
+            return {
+                "clipped_voxels": len(tracked_clipped),
+                "placed_voxels": len(tracked_placed),
+            }
+        return None
 
     # Helper methods for surface config access
     def set_water_parameter(self, par_index, row, col, value):
@@ -538,6 +622,59 @@ class GridModel:
             "building_id_changed": id_changed,
             "building_type_changed": type_changed,
         }
+
+    def validate(self, georef=None):
+        """Check surface-layer consistency rules.
+
+        Delegates to :func:`base.validation.validate` — see that module for
+        the full rule documentation.
+
+        Parameters
+        ----------
+        georef : GeoReference or None, optional
+            If supplied, coordinate-range checks (DRV0001) are also run.
+
+        Returns
+        -------
+        dict with keys 'valid' (bool) and 'violations' (list of str).
+        """
+        from base.validation import validate as _validate
+        return _validate(self, georef=georef)
+
+    def clean_static_driver(self):
+        """Clean common static-driver inconsistencies in-place."""
+        from base.validation import clean_model as _clean_model
+        return _clean_model(self)
+
+    def preview_filter_sweep(self):
+        """Preview PALM-style hole and cavity filtering."""
+        from base.palm_preflight import preview_filter_sweep as _preview_filter_sweep
+        return _preview_filter_sweep(self)
+
+    def apply_filter_sweep(self):
+        """Apply PALM-style hole and cavity filtering."""
+        from base.palm_preflight import apply_filter_sweep as _apply_filter_sweep
+        return _apply_filter_sweep(self)
+
+    def preview_split_building_ids(self):
+        """Preview splitting disconnected building footprints to unique IDs."""
+        from base.palm_preflight import preview_split_building_ids as _preview_split_building_ids
+        return _preview_split_building_ids(self)
+
+    def apply_split_building_ids(self):
+        """Apply splitting disconnected building footprints to unique IDs."""
+        from base.palm_preflight import apply_split_building_ids as _apply_split_building_ids
+        return _apply_split_building_ids(self)
+
+    def preview_align_building_terrain(self):
+        """Preview terrain alignment to PALM's per-building oro_max logic."""
+        from base.palm_preflight import preview_align_building_terrain as _preview_align_building_terrain
+        return _preview_align_building_terrain(self)
+
+    def apply_align_building_terrain(self):
+        """Apply terrain alignment to PALM's per-building oro_max logic."""
+        from base.palm_preflight import apply_align_building_terrain as _apply_align_building_terrain
+        return _apply_align_building_terrain(self)
 
     def get_pixel(self, row, col):
         """Return all data layer values for one pixel as a plain dict."""
@@ -688,8 +825,8 @@ class GridModel:
             color = display.get("color")
             if color:
                 return color
-            
-            return "white"  # unknown vegetation types
+
+        return "white"  # all layers are fill — bare / erased cell
 
     # ------------------------------------------------------------------
     # Compatibility helpers (used by create_sd, load_sd, report)

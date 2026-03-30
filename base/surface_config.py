@@ -1,5 +1,6 @@
 SURFACE_CONFIG = {
     "vegetation": {
+        "default_type": 3,
         "categories": {
             "Ground": {
                 "default_type": 1,

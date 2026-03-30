@@ -147,7 +147,7 @@ def generate_report(root, pixels, nx, ny, dxy, dz, ori, resolved_vegetation=None
         valid_heights = [
             p["building_height"]
             for p in pixels.values()
-            if "building_height" in p and p.get("building_height") != -127 and p.get("building_height") > 0
+            if "building_height" in p and p.get("building_height") != -127 and p.get("building_height") >= 0
             and "building_id" in p and p.get("building_id") > 0
         ]
 
@@ -158,7 +158,7 @@ def generate_report(root, pixels, nx, ny, dxy, dz, ori, resolved_vegetation=None
             unique_building_ids = set(
                 p["building_id"] for p in pixels.values()
                 if "building_id" in p and p.get("building_id") > 0
-                and "building_height" in p and p.get("building_height") != -127 and p.get("building_height") > 0
+                and "building_height" in p and p.get("building_height") != -127 and p.get("building_height") >= 0
             )
 
             # Store values in a dictionary

@@ -8,6 +8,44 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.4.3-alpha] — dev branch (unreleased)
+
+### Added
+- **Eraser tool**: new toolbar entry that resets all surface and building layers of the painted cells to fill values
+- **Validation module** (`base/validation.py`): standalone surface-layer consistency checker with 8 rules + coordinate range check (DRV0001); returns a `violations` list and a per-cell `invalid_mask` boolean array
+  - Rule 1: vegetation / pavement / water are mutually exclusive
+  - Rule 2: building cells must not carry a surface type
+  - Rule 3: all non-building cells need a surface type once any is in use
+  - Rule 4: `water_pars` only on water cells
+  - Rules 5a/5b: soil_type required on vegetation/pavement cells; fill required on building/water cells
+  - Rule 6: LAD only where a surface type is set
+  - Rule 7: `building_type` requires `building_id`
+  - Rule 8: `building_id` must be a positive signed 32-bit integer
+  - DRV0001: `origin_lon` ∈ [−180, 180] and `origin_lat` ∈ [−90, 90]
+- **Validation error overlay** in the canvas: cells involved in at least one rule violation are highlighted with a red inset border; toggleable via *Extras → Show Error Overlay*
+- **Validate before Save** option in Extras menu (default: on); pre-save validation check with "Save anyway?" dialog
+- **Clean Static Driver** action: automatic repair of common inconsistencies (invalid zt, LAD/BAD inside buildings, orphaned soil/surface/water_pars assignments, missing soil types, auto-assigned building IDs); runs validation afterward and shows a detailed summary
+- **PALM Preflight tools** (`base/palm_preflight.py`) exposed via Extras menu (preview + apply):
+  - *Filter Sweep*: PALM-style 1-cell hole filling and narrow-cavity removal; preview highlights affected cells in the overlay before applying
+  - *Split Building IDs*: detects disconnected building footprints sharing the same `building_id` and reassigns unique IDs
+  - *Align Building Terrain*: aligns terrain height within each building group to PALM's `oro_max` logic
+- `GridModel.validate()`, `GridModel.clean_static_driver()`, and all preflight methods added as thin wrappers on the model
+- `add_tree()` now returns a placement summary `{tree_id, clipped_voxels, placed_voxels}`; trees placed entirely within building volume are automatically discarded; a warning dialog is shown when a crown is partially or fully clipped
+
+### Changed
+- `GridModel.__init__` derives `vegetation_type` and `soil_type` defaults from `surface_config` instead of hardcoding `1`; `surface_config.py` gained a top-level `"default_type": 3` for vegetation
+- `_apply_brush()`, `eraser tool path`, and fill-all action now use the shared `_reset_pixel_payload()` helper
+- Paint tools (vegetation / pavement / water / fill-all) skip cells that already carry building or tree data
+- `_rebuild_resolved_vegetation()` refactored to use `_iter_tree_voxels()` and `_build_tree_generator_params()` helpers and a building-volume mask; preserves source metadata via `_resolved_vegetation_source_metadata()`
+- Domain border drawn as a persistent canvas item (`_draw_domain_border()`), raised above all overlays; `clear()` resets its ID
+
+### Fixed
+- `get_color()` returned `None` for fully-erased (all-fill) cells, leaving their canvas rectangle transparent; `return "white"` moved to a function-level fallback
+- `has_building` and `has_bld_id` in `validation.py` used `INT_FILL = -127` as threshold for `building_id`, masking values between −9999 and −128 as non-fill; corrected to use `BUILDING_ID_FILL = -9999`
+- `draw_grid()` rendered all cells with `fill="brown"` on first load instead of reading `model.get_color()`
+
+---
+
 ## [0.4.2-alpha] — dev branch (unreleased)
 
 ### Added

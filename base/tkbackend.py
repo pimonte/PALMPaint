@@ -40,6 +40,9 @@ class TkCanvasBackend:
         self.height_view_min = 0.0
         self.height_view_step = 1.0
         self.height_view_levels = 10
+        self.domain_border_id = None
+        self.domain_border_color = "black"
+        self.domain_border_width = 2
         
         self.hover_items = []
         self.default_outline_color = "white"
@@ -53,6 +56,11 @@ class TkCanvasBackend:
         self.tree_overlay_extinction_k = 0.15
         self.tree_overlay_outline_width = 1
         self.show_tree_overlay = True
+
+        self.error_overlay_items = []
+        self.error_overlay_color = "red"
+        self.error_overlay_width = 2
+        self.show_error_overlay = False
 
     # ------------------------------------------------------------------
     # Canvas setup
@@ -84,6 +92,31 @@ class TkCanvasBackend:
 
     def _get_base_outline_color(self):
         return self.default_outline_color if self.show_grid_lines else ""
+
+    def _draw_domain_border(self):
+        """Draw or update the visible border of the paintable domain."""
+        x2 = self.nx * self.res
+        y2 = self.ny * self.res
+
+        if self.domain_border_id is None:
+            self.domain_border_id = self.canvas.create_rectangle(
+                0,
+                0,
+                x2,
+                y2,
+                fill="",
+                outline=self.domain_border_color,
+                width=self.domain_border_width,
+            )
+        else:
+            self.canvas.coords(self.domain_border_id, 0, 0, x2, y2)
+            self.canvas.itemconfig(
+                self.domain_border_id,
+                outline=self.domain_border_color,
+                width=self.domain_border_width,
+            )
+
+        self.canvas.tag_raise(self.domain_border_id)
     
     # ------------------------------------------------------------------
     # Grid drawing
@@ -105,10 +138,12 @@ class TkCanvasBackend:
             for col in range(nx):
                 x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
+                color = self.model.get_color(row, col, view_mode=self.view_mode)
                 rect = self.canvas.create_rectangle(
-                    x1, y1, x2, y2, fill="brown", outline=outline_color, width=self.normal_outline_width
+                    x1, y1, x2, y2, fill=color, outline=outline_color, width=self.normal_outline_width
                 )
                 self.pixels[(row, col)] = {"id": rect, "outline": outline_color, "width": self.normal_outline_width}
+        self._draw_domain_border()
         self.canvas.config(scrollregion=(0, 0, nx * res, ny * res))
         self.canvas.xview_moveto(0.0)
         self.canvas.yview_moveto(0.0)
@@ -166,6 +201,7 @@ class TkCanvasBackend:
                     )
                     pixel_info["outline"] = outline_color
                     pixel_info["width"] = self.normal_outline_width
+        self._draw_domain_border()
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
         self.redraw_tree_overlay()
         
@@ -319,6 +355,9 @@ class TkCanvasBackend:
             )
             self.hover_items.append(hover_id)
             self.canvas.tag_raise(hover_id)
+
+        if self.domain_border_id is not None:
+            self.canvas.tag_raise(self.domain_border_id)
             
     # ------------------------------------------------------------------
     # Tree overlay
@@ -414,6 +453,62 @@ class TkCanvasBackend:
             self.tree_overlay_items.append(item)
             self.canvas.tag_raise(item)
 
+        if self.domain_border_id is not None:
+            self.canvas.tag_raise(self.domain_border_id)
+
+    # ------------------------------------------------------------------
+    # Validation error overlay
+    # ------------------------------------------------------------------
+
+    def clear_error_overlay(self):
+        for item_id in self.error_overlay_items:
+            self.canvas.delete(item_id)
+        self.error_overlay_items = []
+
+    def set_error_overlay_visible(self, visible):
+        self.show_error_overlay = visible
+        if visible:
+            self._redraw_error_overlay()
+        else:
+            self.clear_error_overlay()
+
+    def update_error_overlay(self, invalid_mask):
+        """Store *invalid_mask* and redraw the overlay if currently visible.
+
+        Parameters
+        ----------
+        invalid_mask : numpy bool array of shape (ny, nx)
+            True for every cell involved in at least one validation violation.
+        """
+        self._error_invalid_mask = invalid_mask
+        if self.show_error_overlay:
+            self._redraw_error_overlay()
+
+    def _redraw_error_overlay(self):
+        self.clear_error_overlay()
+        if not self.show_error_overlay:
+            return
+        mask = getattr(self, "_error_invalid_mask", None)
+        if mask is None or not np.any(mask):
+            return
+        rows, cols = np.where(mask)
+        inset = max(1.0, 0.1 * self.res)
+        inset = min(inset, 0.3 * self.res)
+        for row, col in zip(rows, cols):
+            pixel = self.pixels.get((row, col))
+            if pixel is None:
+                continue
+            x1, y1, x2, y2 = self.canvas.coords(pixel["id"])
+            item = self.canvas.create_rectangle(
+                x1 + inset, y1 + inset, x2 - inset, y2 - inset,
+                outline=self.error_overlay_color,
+                width=self.error_overlay_width,
+                fill="",
+            )
+            self.error_overlay_items.append(item)
+            self.canvas.tag_raise(item)
+        if self.domain_border_id is not None:
+            self.canvas.tag_raise(self.domain_border_id)
 
     # ------------------------------------------------------------------
     # Utility
@@ -423,5 +518,7 @@ class TkCanvasBackend:
         """Delete all canvas objects and reset the pixel registry."""
         self.canvas.delete("all")
         self.pixels = {}
+        self.domain_border_id = None
         self.hover_items = []
         self.clear_tree_overlay()
+        self.clear_error_overlay()
