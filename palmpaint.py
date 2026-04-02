@@ -18,9 +18,11 @@ simple SDs for PALM.
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+import argparse
 import copy
 import math
 import os
+import threading
 import time
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -31,6 +33,21 @@ import base.report as report
 import base.framework as framework
 import base.gridmodel as gridmodel
 import base.tkbackend as tkbackend
+
+_arg_parser = argparse.ArgumentParser(add_help=False)
+_arg_parser.add_argument("--backend", choices=["pil", "tk"], default=None)
+_cli_args, _ = _arg_parser.parse_known_args()
+
+if _cli_args.backend == "tk":
+    _BACKEND_CLASS = tkbackend.TkCanvasBackend
+    print("Using Tk rendering backend (--backend tk).")
+else:
+    try:
+        import base.pilbackend as _pilbackend
+        _BACKEND_CLASS = _pilbackend.PilCanvasBackend
+        print("Using PIL-based rendering backend (faster).")
+    except ImportError:
+        _BACKEND_CLASS = tkbackend.TkCanvasBackend
 from base.create_sd import Save
 from base.geo_reference import (
     complete_georeference,
@@ -834,6 +851,58 @@ class PaintApplication(framework.Framework):
 
         messagebox.showinfo("Static Driver Cleaned", "\n".join(lines))
 
+    def _run_with_busy_dialog(self, label, func):
+        """Run *func* in a worker thread while showing an indeterminate progress bar.
+
+        Returns the value returned by *func*.
+        Exceptions from *func* are re-raised in the main thread.
+        """
+        result_box   = [None]
+        error_box    = [None]
+        done_event   = threading.Event()
+
+        def worker():
+            try:
+                result_box[0] = func()
+            except Exception as exc:  # noqa: BLE001
+                error_box[0] = exc
+            finally:
+                done_event.set()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Please wait")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)   # prevent manual close
+
+        # Centre over the root window
+        self.root.update_idletasks()
+        rx = self.root.winfo_rootx() + self.root.winfo_width()  // 2
+        ry = self.root.winfo_rooty() + self.root.winfo_height() // 2
+        dialog.geometry(f"+{rx - 150}+{ry - 40}")
+
+        tk.Label(dialog, text=label, padx=20, pady=10).pack()
+        bar = ttk.Progressbar(dialog, mode="indeterminate", length=280)
+        bar.pack(padx=20, pady=(0, 15))
+        bar.start(12)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            if done_event.is_set():
+                bar.stop()
+                dialog.grab_release()
+                dialog.destroy()
+            else:
+                dialog.after(50, poll)
+
+        dialog.after(50, poll)
+        dialog.wait_window()   # blocks main-thread event loop until dialog is destroyed
+
+        if error_box[0] is not None:
+            raise error_box[0]
+        return result_box[0]
+
     def _run_preview_apply_tool(
         self,
         title,
@@ -848,7 +917,7 @@ class PaintApplication(framework.Framework):
             return
 
         self.save_state()
-        applied = apply_callback()
+        applied = self._run_with_busy_dialog(f"Applying {title}…", apply_callback)
         summary = applied["summary"]
         self.backend.update_grid(self.nx, self.ny, self.res)
         self.backend.redraw_tree_overlay()
@@ -864,7 +933,10 @@ class PaintApplication(framework.Framework):
 
     def run_filter_sweep_tool(self):
         """Preview and optionally apply PALM-style hole/cavity filtering."""
-        preview = self.model.preview_filter_sweep()
+        preview = self._run_with_busy_dialog(
+            "Computing filter sweep preview…",
+            self.model.preview_filter_sweep,
+        )
         summary = preview["summary"]
         self.backend.update_error_overlay(preview["preview_mask"])
         self.backend.set_error_overlay_visible(True)
@@ -875,7 +947,7 @@ class PaintApplication(framework.Framework):
             (
                 "The preview overlay is now highlighting the cells that would be changed.\n\n"
                 f"Changed cells: {summary['preview_changed_cells']}\n"
-                f"zt cells repaired to 0.0: {summary['zt_repaired']}\n"
+                #f"zt cells repaired to 0.0: {summary['zt_repaired']}\n"
                 f"1-cell holes to fill: {summary['hole_fills']}\n"
                 f"Hole-filter sweeps: {summary['hole_fill_sweeps']}\n"
                 f"Narrow cavities to fill: {summary['narrow_cavities_filled']}\n"
@@ -896,7 +968,7 @@ class PaintApplication(framework.Framework):
             ["Applying filter sweep..."],
             lambda summary, result: [
                 f"Changed cells: {summary['preview_changed_cells']}",
-                f"zt cells repaired to 0.0: {summary['zt_repaired']}",
+                #f"zt cells repaired to 0.0: {summary['zt_repaired']}",
                 f"1-cell holes filled: {summary['hole_fills']}",
                 f"Hole-filter sweeps: {summary['hole_fill_sweeps']}",
                 f"Narrow cavities filled: {summary['narrow_cavities_filled']}",
@@ -1388,7 +1460,7 @@ class PaintApplication(framework.Framework):
         self.show_selected_tool_icon_in_top_bar(str(self.tool_bar_functions[0]))
         self.create_tool_bar()
         self.create_tool_bar_buttons()
-        self.backend = tkbackend.TkCanvasBackend(
+        self.backend = _BACKEND_CLASS(
             self.root, self.model, self.nx, self.ny, self.res
         )
         self.backend.set_view_mode(self.active_view)

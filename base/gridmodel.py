@@ -13,6 +13,167 @@ import math
 
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# CSS3 / X11 named colour → (R, G, B) lookup table.
+# Covers every named colour used in the default surface_config plus the full
+# CSS3 set and a handful of Tk-specific X11 numbered variants (e.g. "green4").
+# Used by get_color_array_rgb() so that gridmodel stays display-framework-free.
+# ---------------------------------------------------------------------------
+_CSS_COLORS: dict = {
+    "aliceblue":           (240, 248, 255),
+    "antiquewhite":        (250, 235, 215),
+    "aqua":                (  0, 255, 255),
+    "aquamarine":          (127, 255, 212),
+    "azure":               (240, 255, 255),
+    "beige":               (245, 245, 220),
+    "bisque":              (255, 228, 196),
+    "black":               (  0,   0,   0),
+    "blanchedalmond":      (255, 235, 205),
+    "blue":                (  0,   0, 255),
+    "blueviolet":          (138,  43, 226),
+    "brown":               (165,  42,  42),
+    "burlywood":           (222, 184, 135),
+    "cadetblue":           ( 95, 158, 160),
+    "chartreuse":          (127, 255,   0),
+    "chocolate":           (210, 105,  30),
+    "coral":               (255, 127,  80),
+    "cornflowerblue":      (100, 149, 237),
+    "cornsilk":            (255, 248, 220),
+    "crimson":             (220,  20,  60),
+    "cyan":                (  0, 255, 255),
+    "darkblue":            (  0,   0, 139),
+    "darkcyan":            (  0, 139, 139),
+    "darkgoldenrod":       (184, 134,  11),
+    "darkgray":            (169, 169, 169),
+    "darkgreen":           (  0, 100,   0),
+    "darkgrey":            (169, 169, 169),
+    "darkkhaki":           (189, 183, 107),
+    "darkmagenta":         (139,   0, 139),
+    "darkolivegreen":      ( 85, 107,  47),
+    "darkorange":          (255, 140,   0),
+    "darkorchid":          (153,  50, 204),
+    "darkred":             (139,   0,   0),
+    "darksalmon":          (233, 150, 122),
+    "darkseagreen":        (143, 188, 143),
+    "darkslateblue":       ( 72,  61, 139),
+    "darkslategray":       ( 47,  79,  79),
+    "darkslategrey":       ( 47,  79,  79),
+    "darkturquoise":       (  0, 206, 209),
+    "darkviolet":          (148,   0, 211),
+    "deeppink":            (255,  20, 147),
+    "deepskyblue":         (  0, 191, 255),
+    "dimgray":             (105, 105, 105),
+    "dimgrey":             (105, 105, 105),
+    "dodgerblue":          ( 30, 144, 255),
+    "firebrick":           (178,  34,  34),
+    "floralwhite":         (255, 250, 240),
+    "forestgreen":         ( 34, 139,  34),
+    "fuchsia":             (255,   0, 255),
+    "gainsboro":           (220, 220, 220),
+    "ghostwhite":          (248, 248, 255),
+    "gold":                (255, 215,   0),
+    "goldenrod":           (218, 165,  32),
+    "gray":                (128, 128, 128),
+    "green":               (  0, 128,   0),
+    "greenyellow":         (173, 255,  47),
+    "grey":                (128, 128, 128),
+    # Tk / X11 numbered variants not in CSS3
+    "green1":              (  0, 255,   0),
+    "green2":              (  0, 238,   0),
+    "green3":              (  0, 205,   0),
+    "green4":              (  0, 139,   0),
+    "honeydew":            (240, 255, 240),
+    "hotpink":             (255, 105, 180),
+    "indianred":           (205,  92,  92),
+    "indigo":              ( 75,   0, 130),
+    "ivory":               (255, 255, 240),
+    "khaki":               (240, 230, 140),
+    "lavender":            (230, 230, 250),
+    "lavenderblush":       (255, 240, 245),
+    "lawngreen":           (124, 252,   0),
+    "lemonchiffon":        (255, 250, 205),
+    "lightblue":           (173, 216, 230),
+    "lightcoral":          (240, 128, 128),
+    "lightcyan":           (224, 255, 255),
+    "lightgoldenrodyellow":(250, 250, 210),
+    "lightgray":           (211, 211, 211),
+    "lightgreen":          (144, 238, 144),
+    "lightgrey":           (211, 211, 211),
+    "lightpink":           (255, 182, 193),
+    "lightsalmon":         (255, 160, 122),
+    "lightseagreen":       ( 32, 178, 170),
+    "lightskyblue":        (135, 206, 250),
+    "lightslategray":      (119, 136, 153),
+    "lightslategrey":      (119, 136, 153),
+    "lightsteelblue":      (176, 196, 222),
+    "lightyellow":         (255, 255, 224),
+    "lime":                (  0, 255,   0),
+    "limegreen":           ( 50, 205,  50),
+    "linen":               (250, 240, 230),
+    "magenta":             (255,   0, 255),
+    "maroon":              (128,   0,   0),
+    "mediumaquamarine":    (102, 205, 170),
+    "mediumblue":          (  0,   0, 205),
+    "mediumorchid":        (186,  85, 211),
+    "mediumpurple":        (147, 112, 219),
+    "mediumseagreen":      ( 60, 179, 113),
+    "mediumslateblue":     (123, 104, 238),
+    "mediumspringgreen":   (  0, 250, 154),
+    "mediumturquoise":     ( 72, 209, 204),
+    "mediumvioletred":     (199,  21, 133),
+    "midnightblue":        ( 25,  25, 112),
+    "mintcream":           (245, 255, 250),
+    "mistyrose":           (255, 228, 225),
+    "moccasin":            (255, 228, 181),
+    "navajowhite":         (255, 222, 173),
+    "navy":                (  0,   0, 128),
+    "oldlace":             (253, 245, 230),
+    "olive":               (128, 128,   0),
+    "olivedrab":           (107, 142,  35),
+    "orange":              (255, 165,   0),
+    "orangered":           (255,  69,   0),
+    "orchid":              (218, 112, 214),
+    "palegoldenrod":       (238, 232, 170),
+    "palegreen":           (152, 251, 152),
+    "paleturquoise":       (175, 238, 238),
+    "palevioletred":       (219, 112, 147),
+    "papayawhip":          (255, 239, 213),
+    "peachpuff":           (255, 218, 185),
+    "peru":                (205, 133,  63),
+    "pink":                (255, 192, 203),
+    "plum":                (221, 160, 221),
+    "powderblue":          (176, 224, 230),
+    "purple":              (128,   0, 128),
+    "red":                 (255,   0,   0),
+    "rosybrown":           (188, 143, 143),
+    "royalblue":           ( 65, 105, 225),
+    "saddlebrown":         (139,  69,  19),
+    "salmon":              (250, 128, 114),
+    "sandybrown":          (244, 164,  96),
+    "seagreen":            ( 46, 139,  87),
+    "seashell":            (255, 245, 238),
+    "sienna":              (160,  82,  45),
+    "silver":              (192, 192, 192),
+    "skyblue":             (135, 206, 235),
+    "slateblue":           (106,  90, 205),
+    "slategray":           (112, 128, 144),
+    "slategrey":           (112, 128, 144),
+    "snow":                (255, 250, 250),
+    "springgreen":         (  0, 255, 127),
+    "steelblue":           ( 70, 130, 180),
+    "tan":                 (210, 180, 140),
+    "teal":                (  0, 128, 128),
+    "thistle":             (216, 191, 216),
+    "tomato":              (255,  99,  71),
+    "turquoise":           ( 64, 224, 208),
+    "violet":              (238, 130, 238),
+    "wheat":               (245, 222, 179),
+    "white":               (255, 255, 255),
+    "whitesmoke":          (245, 245, 245),
+    "yellow":              (255, 255,   0),
+    "yellowgreen":         (154, 205,  50),
+}
+
 
 class GridModel:
     """
@@ -827,6 +988,136 @@ class GridModel:
                 return color
 
         return "white"  # all layers are fill — bare / erased cell
+
+    # ------------------------------------------------------------------
+    # Vectorised colour helpers (backend-independent)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hex_to_rgb(color_str):
+        """Convert a Tk/CSS colour string to an (R, G, B) uint8 tuple.
+
+        Handles:
+        * ``#RRGGBB`` and ``#RGB`` hex notation
+        * Named CSS3 / X11 colours listed in the module-level ``_CSS_COLORS``
+          table, including Tk-specific variants such as ``"green4"``.
+
+        Unknown names return a neutral mid-grey ``(200, 200, 200)``.
+        """
+        s = color_str.strip()
+        if s.startswith("#"):
+            c = s[1:]
+            if len(c) == 6:
+                return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+            if len(c) == 3:
+                return (int(c[0] * 2, 16), int(c[1] * 2, 16), int(c[2] * 2, 16))
+        return _CSS_COLORS.get(s.lower(), (200, 200, 200))
+
+    def _apply_water_to_array(self, arr):
+        """Overwrite *arr* in-place for all water cells (any view mode)."""
+        _hx = self._hex_to_rgb
+        # Default water blue for types not present in surface_config
+        arr[self.water_type > self.INT_FILL] = (0, 0, 255)
+        # Per-type override from config
+        for type_id, defn in (
+            self.surface_config.get("water", {}).get("types", {}).items()
+        ):
+            c = defn.get("display", {}).get("color", "blue")
+            arr[self.water_type == int(type_id)] = _hx(c)
+
+    def _color_array_heightmap(self, arr, z_min=0.0, z_step=1.0, levels=10):
+        """Fill *arr* in-place with terrain-palette colours for heightmap view."""
+        z_step = max(1e-6, float(z_step))
+        levels = max(1, int(levels))
+        palette_hex = self._terrain_palette(levels)
+        palette_rgb = [self._hex_to_rgb(c) for c in palette_hex]
+        z_vals = np.maximum(0.0, self.zt.astype(float))
+        level_indices = np.clip(
+            ((z_vals - float(z_min)) / z_step).astype(int), 0, levels - 1
+        )
+        for i, rgb in enumerate(palette_rgb):
+            arr[level_indices == i] = rgb
+        return arr
+
+    def get_color_array_rgb(
+        self,
+        view_mode="landcover",
+        z_min=0.0,
+        z_max=None,
+        z_step=1.0,
+        levels=10,
+    ):
+        """Return an ``(ny, nx, 3)`` uint8 RGB array for the current grid.
+
+        Vectorised equivalent of calling :meth:`get_color` for every cell.
+        Layer priority is identical to :meth:`get_color`:
+
+            water > building > pavement > vegetation > bare soil (white)
+
+        Parameters mirror those of :meth:`get_color`.
+        """
+        ny, nx = self.ny, self.nx
+        # White = bare / erased cell (default for landcover)
+        arr = np.full((ny, nx, 3), 255, dtype=np.uint8)
+        _hx = self._hex_to_rgb
+
+        if view_mode == "heightmap":
+            return self._color_array_heightmap(arr, z_min, z_step, levels)
+
+        if view_mode == "soil":
+            # Soil-view: every non-building, non-water cell shows its soil colour.
+            # Start with the fallback-of-fallback colour.
+            arr[:] = _hx("#8f7a5a")
+            # Step 1: hardcoded fallback palette for soil types 1–6
+            _SOIL_FB = {
+                1: "#c2b280", 2: "#b49a6a", 3: "#9f8458",
+                4: "#8b6f47", 5: "#6e5438", 6: "#4f3c2c",
+            }
+            for tid, c in _SOIL_FB.items():
+                arr[self.soil_type == tid] = _hx(c)
+            # Step 2: config-defined colours override fallbacks
+            for type_id, defn in (
+                self.surface_config.get("soil", {}).get("types", {}).items()
+            ):
+                c = defn.get("display", {}).get("color")
+                if c:
+                    arr[self.soil_type == int(type_id)] = _hx(c)
+            # Step 3: buildings → black
+            arr[
+                (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
+            ] = (0, 0, 0)
+            # Step 4: water (highest priority)
+            self._apply_water_to_array(arr)
+            return arr
+
+        # ---- landcover (default) -----------------------------------------
+        # Apply lowest → highest priority so each layer overwrites the previous.
+
+        # Priority 1 (lowest): vegetation
+        for type_id, defn in (
+            self.surface_config.get("vegetation", {}).get("types", {}).items()
+        ):
+            c = defn.get("display", {}).get("color")
+            if c:
+                arr[self.vegetation_type == int(type_id)] = _hx(c)
+
+        # Priority 2: pavement (overwrites vegetation where present)
+        for type_id, defn in (
+            self.surface_config.get("pavement", {}).get("types", {}).items()
+        ):
+            c = defn.get("display", {}).get("color")
+            if c:
+                arr[self.pavement_type == int(type_id)] = _hx(c)
+
+        # Priority 3: building → black
+        arr[
+            (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
+        ] = (0, 0, 0)
+
+        # Priority 4 (highest): water
+        self._apply_water_to_array(arr)
+
+        return arr
 
     # ------------------------------------------------------------------
     # Compatibility helpers (used by create_sd, load_sd, report)

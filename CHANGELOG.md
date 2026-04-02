@@ -8,6 +8,27 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.0-alpha] — dev branch (unreleased)
+
+### Added
+- **PIL rendering backend** (`base/pilbackend.py`): new `PilCanvasBackend` class that replaces the per-cell Tkinter `Rectangle` approach with a single `tk.PhotoImage` rebuilt from a numpy array via Pillow; grids of 500×500 and beyond render in well under a second instead of several seconds
+  - Drop-in replacement for `TkCanvasBackend` (identical public API)
+  - Tree and error overlays baked directly into the PIL image via `ImageDraw` (C-level, no individual canvas items)
+  - Grid lines rendered only when cells are ≥ 16 display pixels wide
+  - Display image side capped at 4096 px (`_MAX_SIDE`) to keep memory usage bounded (~48 MB at 4096×4096 RGB)
+  - Selected automatically on startup; silently falls back to the Tk backend if Pillow is not installed
+- **`--backend` CLI argument** in `palmpaint.py`: `--backend pil` (default) or `--backend tk` forces the rendering backend at startup
+- **`_run_with_busy_dialog()`** in `palmpaint.py`: runs long-running callbacks in a worker thread while showing a modal dialog with an indeterminate `ttk.Progressbar`; exceptions from the worker are re-raised in the main thread
+- **`GridModel.get_color_array_rgb()`**: vectorised equivalent of calling `get_color()` for every cell; returns an `(ny, nx, 3)` uint8 numpy array; supports `landcover`, `heightmap`, and `soil` view modes
+- **`GridModel._hex_to_rgb()`** static method: converts Tk/CSS colour strings (`#RRGGBB`, `#RGB`, named colours) to `(R, G, B)` tuples; backed by the new module-level `_CSS_COLORS` lookup table covering the full CSS3 / X11 set including Tk-specific numbered variants (e.g. `"green4"`)
+
+### Changed
+- `base/palm_preflight.py` rewritten with fully vectorised numpy algorithms:
+  - `_build_topography_classification()` builds a 3-D `(nz, ny, nx)` voxel classification array (terrain / building / air) in one pass instead of cell-by-cell BFS
+  - `_fill_holes()` and `_count_solid_neighbors()` implement the 1-cell hole-fill sweep with pure numpy broadcasting; replaces the previous Python-loop BFS
+  - Removed `find_building_components()`, `analyze_building_groups()`, `split_disconnected_building_ids()`, `_four_neighbors()`, `_normalize_zt_array()`, `_normalize_building_heights()`, `_next_unused_building_id()` (functionality merged into the vectorised pipeline)
+
+---
 ## [0.4.3-alpha] — dev branch (unreleased)
 
 ### Added
@@ -25,11 +46,8 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Validation error overlay** in the canvas: cells involved in at least one rule violation are highlighted with a red inset border; toggleable via *Extras → Show Error Overlay*
 - **Validate before Save** option in Extras menu (default: on); pre-save validation check with "Save anyway?" dialog
 - **Clean Static Driver** action: automatic repair of common inconsistencies (invalid zt, LAD/BAD inside buildings, orphaned soil/surface/water_pars assignments, missing soil types, auto-assigned building IDs); runs validation afterward and shows a detailed summary
-- **PALM Preflight tools** (`base/palm_preflight.py`) exposed via Extras menu (preview + apply):
+- **PALM Preflight tool** (`base/palm_preflight.py`) exposed via Extras menu (preview + apply):
   - *Filter Sweep*: PALM-style 1-cell hole filling and narrow-cavity removal; preview highlights affected cells in the overlay before applying
-  - *Split Building IDs*: detects disconnected building footprints sharing the same `building_id` and reassigns unique IDs
-  - *Align Building Terrain*: aligns terrain height within each building group to PALM's `oro_max` logic
-- `GridModel.validate()`, `GridModel.clean_static_driver()`, and all preflight methods added as thin wrappers on the model
 - `add_tree()` now returns a placement summary `{tree_id, clipped_voxels, placed_voxels}`; trees placed entirely within building volume are automatically discarded; a warning dialog is shown when a crown is partially or fully clipped
 
 ### Changed

@@ -17,450 +17,329 @@ DEFAULT_BUILDING_TYPE = 1
 CAVITY_THRESHOLD = 9
 
 
-def _four_neighbors(row, col, ny, nx):
-    if row > 0:
-        yield row - 1, col
-    if row + 1 < ny:
-        yield row + 1, col
-    if col > 0:
-        yield row, col - 1
-    if col + 1 < nx:
-        yield row, col + 1
-
-
-def _normalize_zt_array(zt, float_fill):
-    arr = np.asarray(zt, dtype=np.float32).copy()
-    invalid_mask = ~np.isfinite(arr) | np.isclose(arr, float(float_fill)) | (arr < 0.0)
-    arr[invalid_mask] = 0.0
-    return arr, invalid_mask
-
-
-def _normalize_building_heights(building_height, float_fill):
-    arr = np.asarray(building_height, dtype=np.float32).copy()
-    invalid_mask = ~np.isfinite(arr) | np.isclose(arr, float(float_fill)) | (arr < 0.0)
-    arr[invalid_mask] = float(float_fill)
-    return arr
-
-
 def _building_footprint(building_id, building_height, float_fill):
     height = np.asarray(building_height, dtype=np.float32)
     return (np.asarray(building_id) > 0) & np.isfinite(height) & (height > 0.0)
 
 
-def find_building_components(building_id, building_height, float_fill):
-    """Return connected 4-neighbour components for each positive building ID."""
-    building_id = np.asarray(building_id)
-    footprint = _building_footprint(building_id, building_height, float_fill)
-    ny, nx = building_id.shape
-    visited = np.zeros((ny, nx), dtype=bool)
-    components = {}
-
-    rows, cols = np.where(footprint)
-    for row, col in zip(rows.tolist(), cols.tolist()):
-        if visited[row, col]:
-            continue
-        bid = int(building_id[row, col])
-        queue = deque([(row, col)])
-        visited[row, col] = True
-        cells = []
-        while queue:
-            cr, cc = queue.popleft()
-            cells.append((cr, cc))
-            for nr, nc in _four_neighbors(cr, cc, ny, nx):
-                if visited[nr, nc]:
-                    continue
-                if footprint[nr, nc] and int(building_id[nr, nc]) == bid:
-                    visited[nr, nc] = True
-                    queue.append((nr, nc))
-        components.setdefault(bid, []).append(cells)
-
-    return components
-
-
-def analyze_building_groups(zt, building_id, building_height, building_type, float_fill):
-    """Inspect building groups for disconnected IDs and PALM oro_max effects."""
-    zt = np.asarray(zt, dtype=np.float32)
-    building_id = np.asarray(building_id)
-    building_height = np.asarray(building_height, dtype=np.float32)
-    building_type = np.asarray(building_type)
-    components_by_id = find_building_components(building_id, building_height, float_fill)
-
-    ny, nx = building_id.shape
-    disconnected_mask = np.zeros((ny, nx), dtype=bool)
-    altered_mask = np.zeros((ny, nx), dtype=bool)
-    disconnected_ids = []
-    altered_group_ids = []
-
-    for bid, components in components_by_id.items():
-        if len(components) > 1:
-            disconnected_ids.append(bid)
-            for cells in components:
-                for row, col in cells:
-                    disconnected_mask[row, col] = True
-
-        component_requires_change = False
-        for cells in components:
-            cell_rows = np.array([row for row, _ in cells], dtype=int)
-            cell_cols = np.array([col for _, col in cells], dtype=int)
-            local_types = building_type[cell_rows, cell_cols]
-            if np.all(local_types == 7):
-                continue
-            local_zt = zt[cell_rows, cell_cols]
-            if local_zt.size > 0 and np.any(np.abs(local_zt - np.max(local_zt)) > 1e-6):
-                component_requires_change = True
-                altered_mask[cell_rows, cell_cols] = True
-
-        if component_requires_change:
-            altered_group_ids.append(bid)
-
-    return {
-        "components_by_id": components_by_id,
-        "disconnected_mask": disconnected_mask,
-        "altered_mask": altered_mask,
-        "disconnected_ids": disconnected_ids,
-        "altered_group_ids": altered_group_ids,
-        "disconnected_group_count": len(disconnected_ids),
-        "disconnected_cell_count": int(np.count_nonzero(disconnected_mask)),
-        "terrain_adjust_group_count": len(altered_group_ids),
-        "terrain_adjust_cell_count": int(np.count_nonzero(altered_mask)),
-    }
-
-
-def _next_unused_building_id(building_id):
-    used = set(int(value) for value in np.asarray(building_id)[np.asarray(building_id) > 0].tolist())
-    next_id = 1
-    while next_id in used:
-        next_id += 1
-    return next_id, used
-
-
-def split_disconnected_building_ids(building_id, building_height, building_type, float_fill):
-    """Split duplicated building IDs by 4-connected footprint components."""
-    building_id = np.asarray(building_id)
-    building_height = np.asarray(building_height, dtype=np.float32)
-    building_type = np.asarray(building_type)
-    result = np.array(building_id, copy=True)
-    components_by_id = find_building_components(building_id, building_height, float_fill)
-    split_mask = np.zeros(building_id.shape, dtype=bool)
-
-    next_id, used = _next_unused_building_id(result)
-    split_groups = 0
-    split_components = 0
-    split_cells = 0
-
-    for bid, components in components_by_id.items():
-        if len(components) <= 1:
-            continue
-        split_groups += 1
-        for cells in components[1:]:
-            while next_id in used:
-                next_id += 1
-            used.add(next_id)
-            split_components += 1
-            split_cells += len(cells)
-            for row, col in cells:
-                result[row, col] = next_id
-                split_mask[row, col] = True
-            next_id += 1
-
-    return result, {
-        "split_mask": split_mask,
-        "split_group_count": split_groups,
-        "split_component_count": split_components,
-        "split_cell_count": split_cells,
-    }
-
-
-def normalize_building_terrain(zt, building_id, building_height, building_type, float_fill):
-    """Raise terrain under each connected building group to PALM's oro_max."""
-    zt = np.asarray(zt, dtype=np.float32).copy()
-    building_type = np.asarray(building_type)
-    components_by_id = find_building_components(building_id, building_height, float_fill)
-    changed_mask = np.zeros(zt.shape, dtype=bool)
-
-    for _bid, components in components_by_id.items():
-        for cells in components:
-            cell_rows = np.array([row for row, _ in cells], dtype=int)
-            cell_cols = np.array([col for _, col in cells], dtype=int)
-            local_types = building_type[cell_rows, cell_cols]
-            if np.all(local_types == 7):
-                continue
-            target = float(np.max(zt[cell_rows, cell_cols]))
-            diff_mask = np.abs(zt[cell_rows, cell_cols] - target) > 1e-6
-            if np.any(diff_mask):
-                zt[cell_rows, cell_cols] = target
-                changed_mask[cell_rows[diff_mask], cell_cols[diff_mask]] = True
-
-    return zt, {
-        "changed_mask": changed_mask,
-        "changed_group_count": len(np.unique(np.asarray(building_id)[changed_mask])) if np.any(changed_mask) else 0,
-        "changed_cell_count": int(np.count_nonzero(changed_mask)),
-    }
-
-
 def _infer_column_building_labels(building_id, building_type, footprint, int_fill=-127):
-    id_arr = np.asarray(building_id)
+    id_arr  = np.asarray(building_id)
     type_arr = np.asarray(building_type)
-    col_id = np.where(footprint, id_arr, int_fill).astype(id_arr.dtype, copy=False)
-    col_type = np.where(footprint, type_arr, int_fill).astype(type_arr.dtype, copy=False)
-    return np.array(col_id, copy=True), np.array(col_type, copy=True)
+    col_id   = np.where(footprint, id_arr,   int_fill).astype(id_arr.dtype,   copy=True)
+    col_type = np.where(footprint, type_arr, int_fill).astype(type_arr.dtype, copy=True)
+    return col_id, col_type
 
 
 def _build_topography_classification(zt, building_height, building_id, building_type, dz, float_fill):
-    zt = np.asarray(zt, dtype=np.float32)
+    zt              = np.asarray(zt,              dtype=np.float32)
     building_height = np.asarray(building_height, dtype=np.float32)
-    building_id = np.asarray(building_id)
+    building_id     = np.asarray(building_id)
     ny, nx = zt.shape
     step = float(dz) if float(dz) > 0.0 else 1.0
 
-    footprint = _building_footprint(building_id, building_height, float_fill)
-    top_height = np.array(zt, copy=True)
-    top_height[footprint] = zt[footprint] + np.maximum(building_height[footprint], 0.0)
-    max_top = float(np.max(top_height)) if top_height.size else 0.0
-    nz = max(1, int(np.ceil(max_top / step)))
+    footprint  = _building_footprint(building_id, building_height, float_fill)
+    top_height = np.where(footprint, zt + np.maximum(building_height, 0.0), zt)
+    max_top    = float(top_height.max()) if top_height.size else 0.0
+    nz         = max(1, int(np.ceil(max_top / step)))
 
-    z_centers = (np.arange(nz, dtype=np.float32) + 0.5) * step
+    z_centers = (np.arange(nz, dtype=np.float32) + 0.5) * step   # shape (nz,)
+    z         = z_centers[:, np.newaxis, np.newaxis]              # broadcast axis
+
     classes = np.zeros((nz, ny, nx), dtype=np.int8)
+    classes[z <= zt[np.newaxis]]                                                                   = 1
+    classes[footprint[np.newaxis] & (z > zt[np.newaxis]) & (z <= (zt + np.maximum(building_height, 0.0))[np.newaxis])] = 2
 
-    terrain_mask = z_centers[:, np.newaxis, np.newaxis] <= zt[np.newaxis, :, :]
-    classes[terrain_mask] = 1
-
-    building_mask = (
-        footprint[np.newaxis, :, :]
-        & (z_centers[:, np.newaxis, np.newaxis] > zt[np.newaxis, :, :])
-        & (z_centers[:, np.newaxis, np.newaxis] <= (zt + np.maximum(building_height, 0.0))[np.newaxis, :, :])
-    )
-    classes[building_mask] = 2
-
-    column_building_id, column_building_type = _infer_column_building_labels(
-        building_id, building_type, footprint
-    )
-    return classes, column_building_id, column_building_type, step
+    col_id, col_type = _infer_column_building_labels(building_id, building_type, footprint)
+    return classes, col_id, col_type, step
 
 
-def _inherit_building_label(row, col, building_id, building_type):
-    ny, nx = building_id.shape
-    for nr, nc in _four_neighbors(row, col, ny, nx):
-        if int(building_id[nr, nc]) > 0:
-            return int(building_id[nr, nc]), int(building_type[nr, nc]) if int(building_type[nr, nc]) > -127 else DEFAULT_BUILDING_TYPE
-    return None, None
+# ---------------------------------------------------------------------------
+# Hole filling  (vectorised)
+# ---------------------------------------------------------------------------
+
+def _count_solid_neighbors(solid):
+    """Return per-cell count of solid 6-neighbors (no diagonal, no wrap)."""
+    nz, ny, nx = solid.shape
+    count = np.zeros((nz, ny, nx), dtype=np.int8)
+    count[1:,  :,  :] += solid[:-1,  :,  :]   # k-1 (below)
+    count[:-1, :,  :] += solid[1:,   :,  :]   # k+1 (above)
+    count[:,  1:,  :] += solid[:,  :-1, :]    # j-1
+    count[:, :-1,  :] += solid[:,  1:,  :]    # j+1
+    count[:,  :,  1:] += solid[:,   :, :-1]   # i-1
+    count[:,  :, :-1] += solid[:,   :,  1:]   # i+1
+    return count
 
 
-def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill):
-    """Apply PALM-style hole and cavity filtering to a discrete constant-dz mask."""
-    classes, col_building_id, col_building_type, step = _build_topography_classification(
-        zt, building_height, building_id, building_type, dz, float_fill
-    )
+def _fill_holes(classes, col_id, col_type):
+    """Iterative 1-gridpoint hole filling, fully vectorised.
+
+    A fluid cell surrounded by ≥ 4 solid neighbours is filled.
+    Returns (total_fills, sweep_count, fill_mask_3d).
+    """
     nz, ny, nx = classes.shape
-    hole_fills = 0
-    hole_sweeps = 0
-    hole_fill_mask = np.zeros((nz, ny, nx), dtype=bool)
 
-    changed = True
-    while changed:
-        changed = False
-        sweep_fills = []
-        for k in range(nz):
-            for row in range(ny):
-                for col in range(nx):
-                    if classes[k, row, col] != 0:
-                        continue
-                    walls = 0
-                    if row > 0 and classes[k, row - 1, col] != 0:
-                        walls += 1
-                    if row + 1 < ny and classes[k, row + 1, col] != 0:
-                        walls += 1
-                    if col > 0 and classes[k, row, col - 1] != 0:
-                        walls += 1
-                    if col + 1 < nx and classes[k, row, col + 1] != 0:
-                        walls += 1
-                    if k > 0 and classes[k - 1, row, col] != 0:
-                        walls += 1
-                    if k + 1 < nz and classes[k + 1, row, col] != 0:
-                        walls += 1
-                    if walls >= 4:
-                        bid = int(col_building_id[row, col])
-                        btype = int(col_building_type[row, col])
-                        if bid <= 0:
-                            inherited_id, inherited_type = _inherit_building_label(
-                                row, col, col_building_id, col_building_type
-                            )
-                            if inherited_id is not None:
-                                bid = inherited_id
-                                btype = inherited_type
-                                col_building_id[row, col] = bid
-                                col_building_type[row, col] = btype
-                        fill_class = 2 if bid > 0 else 1
-                        sweep_fills.append((k, row, col, fill_class))
-        if sweep_fills:
-            hole_sweeps += 1
-            hole_fills += len(sweep_fills)
-            for k, row, col, fill_class in sweep_fills:
-                classes[k, row, col] = fill_class
-                hole_fill_mask[k, row, col] = True
-            changed = True
+    # 2-D map: does this (row, col) column contain a building?
+    has_building = col_id > 0   # shape (ny, nx)
 
-    cavity_fill_mask = np.zeros((nz, ny, nx), dtype=bool)
+    # For hole-filled cells that have no column building yet we propagate
+    # from a neighbour.  Pre-build shifted views for the 2-D label arrays.
+    fill_mask   = np.zeros((nz, ny, nx), dtype=bool)
+    total_fills = 0
+    sweeps      = 0
+
+    while True:
+        solid   = classes != 0
+        count   = _count_solid_neighbors(solid)
+        to_fill = (~solid) & (count >= 4)   # candidate fluid cells
+
+        if not np.any(to_fill):
+            break
+
+        sweeps      += 1
+        total_fills += int(np.count_nonzero(to_fill))
+        fill_mask   |= to_fill
+
+        # Determine fill class per (row, col) column
+        # Propagate building label from a horizontal neighbour where needed
+        fill_cols_yx = np.any(to_fill, axis=0)   # (ny, nx) mask of affected columns
+        new_has_bld  = has_building.copy()
+
+        # horizontal neighbour propagation for columns that lack a building label
+        needs_label = fill_cols_yx & ~has_building
+        if np.any(needs_label):
+            # shift the existing has_building mask in all 4 directions and OR together
+            inherited = np.zeros((ny, nx), dtype=bool)
+            if ny > 1:
+                inherited[1:,  :] |= has_building[:-1, :]
+                inherited[:-1, :] |= has_building[1:,  :]
+            if nx > 1:
+                inherited[:,  1:] |= has_building[:, :-1]
+                inherited[:, :-1] |= has_building[:,  1:]
+            new_has_bld |= (needs_label & inherited)
+
+        fill_class = np.where(new_has_bld, np.int8(2), np.int8(1))   # (ny, nx)
+        classes[to_fill] = np.broadcast_to(fill_class[np.newaxis], classes.shape)[to_fill]
+        has_building = new_has_bld   # keep updated for next sweep
+
+    return total_fills, sweeps, fill_mask
+
+
+# ---------------------------------------------------------------------------
+# Cavity filling  (BFS per layer, with clean early-abort)
+# ---------------------------------------------------------------------------
+
+def _four_neighbors(row, col, ny, nx):
+    if row > 0:        yield row - 1, col
+    if row + 1 < ny:   yield row + 1, col
+    if col > 0:        yield row, col - 1
+    if col + 1 < nx:   yield row, col + 1
+
+
+def _fill_cavities(classes, col_id):
+    """Fill enclosed fluid cavities of < CAVITY_THRESHOLD cells in the xy-plane.
+
+    Mirrors the PALM cavity filter:
+    - only courtyard-type cavities (xy-plane) are treated
+    - a cavity is only filled if the layer directly below is fully solid
+    - filling is done layer by layer from k=1 upward
+    Returns (cavity_count, fill_mask_3d).
+    """
+    nz, ny, nx = classes.shape
+    fill_mask   = np.zeros((nz, ny, nx), dtype=bool)
     cavity_count = 0
 
+    has_building = col_id > 0   # (ny, nx)
+
     for k in range(1, nz):
-        visited = np.zeros((ny, nx), dtype=bool)
-        for row in range(ny):
-            for col in range(nx):
-                if visited[row, col] or classes[k, row, col] != 0:
-                    continue
-                region = []
-                queue = deque([(row, col)])
-                visited[row, col] = True
-                touches_boundary = False
-                while queue and len(region) < CAVITY_THRESHOLD:
-                    cr, cc = queue.popleft()
-                    region.append((cr, cc))
-                    if cr == 0 or cc == 0 or cr == ny - 1 or cc == nx - 1:
-                        touches_boundary = True
-                    for nr, nc in _four_neighbors(cr, cc, ny, nx):
-                        if visited[nr, nc] or classes[k, nr, nc] != 0:
-                            continue
-                        visited[nr, nc] = True
-                        queue.append((nr, nc))
-                if queue:
-                    touches_boundary = True
+        layer_fluid = classes[k] == 0          # (ny, nx)
+        layer_below = classes[k - 1] != 0      # (ny, nx)
+        visited     = np.zeros((ny, nx), dtype=bool)
+
+        fluid_rows, fluid_cols = np.nonzero(layer_fluid)
+
+        for idx in range(fluid_rows.size):
+            row, col = int(fluid_rows[idx]), int(fluid_cols[idx])
+            if visited[row, col]:
+                continue
+
+            # BFS — abort as soon as we exceed the threshold
+            region         = []
+            large_region   = False
+            touches_border = False
+            queue          = deque()
+            queue.append((row, col))
+            visited[row, col] = True
+
+            while queue:
+                cr, cc = queue.popleft()
+                region.append((cr, cc))
+
+                if cr == 0 or cc == 0 or cr == ny - 1 or cc == nx - 1:
+                    touches_border = True
+
+                if len(region) >= CAVITY_THRESHOLD:
+                    # Drain remaining queue to mark cells visited, no filling
+                    large_region = True
                     while queue:
-                        cr, cc = queue.popleft()
-                        region.append((cr, cc))
-                        for nr, nc in _four_neighbors(cr, cc, ny, nx):
+                        dr, dc = queue.popleft()
+                        for nr, nc in _four_neighbors(dr, dc, ny, nx):
+                            if not visited[nr, nc] and not layer_fluid[nr, nc]:
+                                continue
                             if visited[nr, nc] or classes[k, nr, nc] != 0:
                                 continue
                             visited[nr, nc] = True
                             queue.append((nr, nc))
-                if touches_boundary or len(region) >= CAVITY_THRESHOLD:
-                    continue
-                below_solid = all(classes[k - 1, rr, cc] != 0 for rr, cc in region)
-                if not below_solid:
-                    continue
-                cavity_count += 1
-                for rr, cc in region:
-                    fill_class = 2 if int(col_building_id[rr, cc]) > 0 else 1
-                    classes[k, rr, cc] = fill_class
-                    cavity_fill_mask[k, rr, cc] = True
+                    break
 
-    new_zt = np.zeros((ny, nx), dtype=np.float32)
-    new_building_height = np.full((ny, nx), float(float_fill), dtype=np.float32)
-    new_building_id = np.array(building_id, copy=True)
+                for nr, nc in _four_neighbors(cr, cc, ny, nx):
+                    if visited[nr, nc] or classes[k, nr, nc] != 0:
+                        continue
+                    visited[nr, nc] = True
+                    queue.append((nr, nc))
+
+            if large_region or touches_border:
+                continue
+
+            # Only fill if the entire region sits on solid ground
+            if not all(layer_below[rr, cc] for rr, cc in region):
+                continue
+
+            cavity_count += 1
+            for rr, cc in region:
+                fill_class = np.int8(2) if has_building[rr, cc] else np.int8(1)
+                classes[k, rr, cc]   = fill_class
+                fill_mask[k, rr, cc] = True
+
+    return cavity_count, fill_mask
+
+
+# ---------------------------------------------------------------------------
+# Reconstruct 2-D arrays from the filtered 3-D classification
+# ---------------------------------------------------------------------------
+
+def _reconstruct_2d(classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill):
+    """Derive zt / building_height / building_id / building_type from the
+    filtered voxel classes array using vectorised NumPy operations."""
+    nz, ny, nx = classes.shape
+
+    terrain_mask  = classes == 1    # (nz, ny, nx)
+    building_mask = classes == 2
+
+    # --- terrain top ---
+    has_terrain   = np.any(terrain_mask, axis=0)
+    # highest k index with class == 1, then convert to height
+    top_k_terrain = nz - 1 - np.argmax(terrain_mask[::-1], axis=0)   # (ny, nx)
+    new_zt = np.where(has_terrain, (top_k_terrain + 1) * step, 0.0).astype(np.float32)
+
+    # --- building top ---
+    has_building  = np.any(building_mask, axis=0)
+    top_k_bld     = nz - 1 - np.argmax(building_mask[::-1], axis=0)
+    bld_top_h     = ((top_k_bld + 1) * step).astype(np.float32)
+    new_building_height = np.where(
+        has_building,
+        np.maximum(0.0, bld_top_h - new_zt),
+        float(float_fill),
+    ).astype(np.float32)
+
+    # --- building id / type ---
+    new_building_id   = np.array(building_id,   copy=True)
     new_building_type = np.array(building_type, copy=True)
-    surface_only_mask = (np.asarray(building_id) > 0) & np.isfinite(building_height) & np.isclose(
-        np.asarray(building_height, dtype=np.float32), 0.0
+
+    # Cells that gained a building after filtering but had no column id:
+    # inherit from a horizontal neighbour (same simple 4-neighbor propagation)
+    needs_id = has_building & (new_building_id <= 0)
+    if np.any(needs_id):
+        padded_id   = np.where(new_building_id > 0,   new_building_id,   0)
+        padded_type = np.where(new_building_id > 0,   new_building_type, DEFAULT_BUILDING_TYPE)
+        for shift_axis, shift_dir in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            still_needs = needs_id & (new_building_id <= 0)
+            if not np.any(still_needs):
+                break
+            neighbour_id   = np.roll(padded_id,   shift_dir, axis=shift_axis)
+            neighbour_type = np.roll(padded_type, shift_dir, axis=shift_axis)
+            # block wrap-around
+            if shift_axis == 0:
+                if shift_dir == 1:  neighbour_id[0,  :] = 0
+                else:               neighbour_id[-1, :] = 0
+            else:
+                if shift_dir == 1:  neighbour_id[:,  0] = 0
+                else:               neighbour_id[:, -1] = 0
+            update = still_needs & (neighbour_id > 0)
+            new_building_id[update]   = neighbour_id[update]
+            new_building_type[update] = neighbour_type[update]
+
+        # Fallback for isolated new cells with no nearby label
+        still_needs = needs_id & (new_building_id <= 0)
+        new_building_id[still_needs]   = 1
+        new_building_type[still_needs] = DEFAULT_BUILDING_TYPE
+
+    # Fix missing building_type on cells that already have a valid id
+    bad_type = has_building & (new_building_id > 0) & (new_building_type <= int_fill)
+    new_building_type[bad_type] = DEFAULT_BUILDING_TYPE
+
+    # Clear building fields for cells that lost their building after filtering
+    surface_only = (np.asarray(building_id) > 0) & np.isfinite(np.asarray(building_height, dtype=np.float32)) \
+                   & np.isclose(np.asarray(building_height, dtype=np.float32), 0.0)
+    no_building = ~has_building
+
+    # Sub-voxel buildings (building_height < dz and no voxel centre inside the
+    # building) produce zero class-2 voxels and would be incorrectly cleared.
+    # Preserve their original data so they don't become bare non-building cells.
+    original_footprint = (
+        (np.asarray(building_id) > 0)
+        & np.isfinite(np.asarray(building_height, dtype=np.float32))
+        & (np.asarray(building_height, dtype=np.float32) > 0.0)
+    )
+    lost_buildings = no_building & original_footprint & ~surface_only
+
+    clear_mask = no_building & ~surface_only & ~lost_buildings
+    new_building_height[clear_mask] = float(float_fill)
+    new_building_id[clear_mask]     = int_fill
+    new_building_type[clear_mask]   = int_fill
+    new_building_height[no_building & surface_only] = 0.0
+    # For sub-voxel buildings: restore original height; id/type already copied.
+    new_building_height[lost_buildings] = np.asarray(building_height, dtype=np.float32)[lost_buildings]
+
+    return new_zt, new_building_height, new_building_id, new_building_type
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill):
+    """Apply PALM-style hole and cavity filtering to a discrete constant-dz mask."""
+    classes, col_id, col_type, step = _build_topography_classification(
+        zt, building_height, building_id, building_type, dz, float_fill
     )
 
-    for row in range(ny):
-        for col in range(nx):
-            terrain_levels = np.where(classes[:, row, col] == 1)[0]
-            building_levels = np.where(classes[:, row, col] == 2)[0]
+    hole_fills, hole_sweeps, hole_fill_mask = _fill_holes(classes, col_id, col_type)
 
-            if terrain_levels.size:
-                new_zt[row, col] = float((terrain_levels.max() + 1) * step)
+    cavity_count, cavity_fill_mask = _fill_cavities(classes, col_id)
 
-            if building_levels.size:
-                top = float((building_levels.max() + 1) * step)
-                new_building_height[row, col] = max(0.0, top - new_zt[row, col])
-                if int(new_building_id[row, col]) <= 0:
-                    inferred_id, inferred_type = _inherit_building_label(
-                        row, col, new_building_id, new_building_type
-                    )
-                    new_building_id[row, col] = inferred_id if inferred_id is not None else 1
-                    new_building_type[row, col] = (
-                        inferred_type if inferred_type is not None else DEFAULT_BUILDING_TYPE
-                    )
-                elif int(new_building_type[row, col]) <= int(int_fill):
-                    new_building_type[row, col] = DEFAULT_BUILDING_TYPE
-            else:
-                if surface_only_mask[row, col]:
-                    new_building_height[row, col] = 0.0
-                else:
-                    new_building_height[row, col] = float(float_fill)
-                    new_building_id[row, col] = int_fill
-                    new_building_type[row, col] = int_fill
+    new_zt, new_bh, new_bid, new_btype = _reconstruct_2d(
+        classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill
+    )
 
     return {
-        "zt": new_zt,
-        "building_height": new_building_height,
-        "building_id": new_building_id,
-        "building_type": new_building_type,
-        "hole_fill_count": hole_fills,
-        "hole_sweeps": hole_sweeps,
-        "hole_fill_columns": np.any(hole_fill_mask, axis=0),
-        "cavity_fill_count": cavity_count,
-        "cavity_fill_voxels": int(np.count_nonzero(cavity_fill_mask)),
+        "zt":                  new_zt,
+        "building_height":     new_bh,
+        "building_id":         new_bid,
+        "building_type":       new_btype,
+        "hole_fill_count":     hole_fills,
+        "hole_sweeps":         hole_sweeps,
+        "hole_fill_columns":   np.any(hole_fill_mask, axis=0),
+        "cavity_fill_count":   cavity_count,
+        "cavity_fill_voxels":  int(np.count_nonzero(cavity_fill_mask)),
         "cavity_fill_columns": np.any(cavity_fill_mask, axis=0),
     }
-
-
-def preview_split_building_ids(model):
-    """Preview splitting duplicated building IDs across disconnected footprints."""
-    cleaned_bh = np.vectorize(
-        lambda value: model.quantize_building_height(value, model.dz), otypes=[np.float32]
-    )(_normalize_building_heights(model.building_height, model.FLOAT_FILL))
-    split_ids, split_summary = split_disconnected_building_ids(
-        model.building_id, cleaned_bh, model.building_type, model.FLOAT_FILL
-    )
-    return {
-        "summary": {
-            "building_ids_split_groups": int(split_summary["split_group_count"]),
-            "building_ids_split_components": int(split_summary["split_component_count"]),
-            "building_ids_split_cells": int(split_summary["split_cell_count"]),
-        },
-        "preview": {"building_id": split_ids},
-    }
-
-
-def apply_split_building_ids(model):
-    """Apply ID splitting across disconnected building footprints."""
-    result = preview_split_building_ids(model)
-    model.building_id[:, :] = result["preview"]["building_id"]
-    return result
-
-
-def preview_align_building_terrain(model):
-    """Preview terrain alignment to per-building oro_max groups."""
-    cleaned_zt, invalid_zt_mask = _normalize_zt_array(model.zt, model.FLOAT_FILL)
-    cleaned_zt = np.vectorize(
-        lambda value: model.quantize_terrain_height(value, model.dz), otypes=[np.float32]
-    )(cleaned_zt)
-    cleaned_bh = np.vectorize(
-        lambda value: model.quantize_building_height(value, model.dz), otypes=[np.float32]
-    )(_normalize_building_heights(model.building_height, model.FLOAT_FILL))
-    normalized_zt, terrain_summary = normalize_building_terrain(
-        cleaned_zt, model.building_id, cleaned_bh, model.building_type, model.FLOAT_FILL
-    )
-    return {
-        "summary": {
-            "zt_repaired": int(np.count_nonzero(invalid_zt_mask)),
-            "terrain_adjusted_groups": int(terrain_summary["changed_group_count"]),
-            "terrain_adjusted_cells": int(terrain_summary["changed_cell_count"]),
-        },
-        "preview": {"zt": normalized_zt},
-    }
-
-
-def apply_align_building_terrain(model):
-    """Apply terrain alignment to per-building oro_max groups."""
-    result = preview_align_building_terrain(model)
-    model.zt[:, :] = result["preview"]["zt"]
-    return result
-
-
+    
+ 
 def preview_filter_sweep(model):
     """Preview PALM-style hole and cavity filtering without ID/terrain preprocessing."""
-    cleaned_zt, invalid_zt_mask = _normalize_zt_array(model.zt, model.FLOAT_FILL)
-    cleaned_zt = np.vectorize(
-        lambda value: model.quantize_terrain_height(value, model.dz), otypes=[np.float32]
-    )(cleaned_zt)
-    cleaned_bh = np.vectorize(
-        lambda value: model.quantize_building_height(value, model.dz), otypes=[np.float32]
-    )(_normalize_building_heights(model.building_height, model.FLOAT_FILL))
     filter_result = apply_topography_filters(
-        cleaned_zt,
-        cleaned_bh,
+        model.zt,
+        model.building_height,
         model.building_id,
         model.building_type,
         model.dz,
@@ -470,7 +349,7 @@ def preview_filter_sweep(model):
     preview_mask = filter_result["hole_fill_columns"] | filter_result["cavity_fill_columns"]
     return {
         "summary": {
-            "zt_repaired": int(np.count_nonzero(invalid_zt_mask)),
+            #"zt_repaired": 0,
             "hole_fills": int(filter_result["hole_fill_count"]),
             "hole_fill_sweeps": int(filter_result["hole_sweeps"]),
             "narrow_cavities_filled": int(filter_result["cavity_fill_count"]),
