@@ -28,25 +28,41 @@ def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
         dtype=dtype if dtype is not None else np.float32
     )
     
-def get_3d_data(nc_file, var_name, ny, nx, dtype=None):
-    """Load a 3D variable (__, y, x) or return None."""
+def get_3d_data(nc_file, var_name, ny, nx, dtype=None, storage_factory=None):
+    """Load a 3D variable (__, y, x) or return None.
+
+    When ``storage_factory`` is provided, the data is streamed slice-by-slice
+    into that target to avoid materializing the full 3D array in RAM.
+    """
     if var_name not in nc_file.variables:
         return None
 
-    data = nc_file.variables[var_name][:]
-    if hasattr(data, "filled"):
-        fv = getattr(nc_file.variables[var_name], "_FillValue", -9999.0)
-        data = data.filled(fv)
-
-    if dtype is not None:
-        data = data.astype(dtype)
-
-    if data.ndim != 3:
+    var = nc_file.variables[var_name]
+    if len(var.shape) != 3:
         return None
 
-    if data.shape[1] != ny or data.shape[2] != nx:
+    if var.shape[1] != ny or var.shape[2] != nx:
         return None
 
+    target_dtype = np.dtype(dtype if dtype is not None else var.dtype)
+    fill_value = getattr(var, "_FillValue", -9999.0)
+
+    if storage_factory is None:
+        data = var[:]
+        if hasattr(data, "filled"):
+            data = data.filled(fill_value)
+        if dtype is not None:
+            data = data.astype(target_dtype)
+        return data
+
+    data = storage_factory(var.shape, target_dtype, fill_value, var_name)
+    for idx in range(var.shape[0]):
+        layer = var[idx, :, :]
+        if hasattr(layer, "filled"):
+            layer = layer.filled(fill_value)
+        if dtype is not None:
+            layer = layer.astype(target_dtype, copy=False)
+        data[idx, :, :] = layer
     return data
 
 
@@ -61,27 +77,12 @@ def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np
 
     return np.full((npars, ny, nx), fill_value, dtype=dtype)
 
-def Load(filename="output.nc"):
+def LoadModel(filename="output.nc", surface_config=None):
     """
-    Load grid data from a NetCDF file and convert it into a dictionary
-    for the paint application.
+    Load grid data from a NetCDF file directly into a GridModel.
 
     Returns:
-      (grid, nx, ny, res, dz, origin_tuple, resolved_vegetation, georef)
-
-    The grid is a dictionary where keys are (row, col) and values are
-    dictionaries with pixel properties:
-      - vegetation_type
-      - soil_type
-      - pavement_type
-      - water_type
-      - building_id
-      - building_height (from 'buildings_2d')
-      - building_type
-      - color (default set to 'brown')
-      - outline (default set to 'gray')
-
-    The function also reads coordinate variables to determine the resolution.
+      (model, nx, ny, res, dz, origin_tuple, resolved_vegetation, georef)
     """
     with Dataset(filename, 'r') as nc_file:
         # Get dimensions
@@ -135,7 +136,6 @@ def Load(filename="output.nc"):
             zlad = zlad.astype(np.float32)
 
         stored_dz = getattr(nc_file, "palmpaint_dz", None)
-        source_buildings_3d = get_3d_data(nc_file, "buildings_3d", ny, nx, dtype=np.int8)
 
         if z_coords is not None:
             dz = GridModel.infer_vertical_step(z_coords, res)
@@ -146,9 +146,52 @@ def Load(filename="output.nc"):
         else:
             dz = float(res)
 
-        lad = get_3d_data(nc_file, "lad", ny, nx, dtype=np.float32)
-        bad = get_3d_data(nc_file, "bad", ny, nx, dtype=np.float32)
-        tree_id = get_3d_data(nc_file, "tree_id", ny, nx, dtype=np.int32)
+        model = GridModel(nx, ny, res, dz, surface_config=surface_config)
+        model.vegetation_type[:, :] = veg
+        model.soil_type[:, :] = soil
+        model.pavement_type[:, :] = pav
+        model.water_type[:, :] = water
+        model.building_id[:, :] = bldg_id
+        model.building_height[:, :] = bldg_height
+        model.building_type[:, :] = bldg_type
+        model.zt[:, :] = zt
+        model.water_pars[:, :, :] = water_pars
+
+        def _storage_factory(shape, dtype, _fill_value, name_prefix):
+            return model.allocate_storage(shape, dtype, fill_value=0, name_prefix=name_prefix)
+
+        source_buildings_3d = get_3d_data(
+            nc_file,
+            "buildings_3d",
+            ny,
+            nx,
+            dtype=np.int8,
+            storage_factory=_storage_factory,
+        )
+        lad = get_3d_data(
+            nc_file,
+            "lad",
+            ny,
+            nx,
+            dtype=np.float32,
+            storage_factory=_storage_factory,
+        )
+        bad = get_3d_data(
+            nc_file,
+            "bad",
+            ny,
+            nx,
+            dtype=np.float32,
+            storage_factory=_storage_factory,
+        )
+        tree_id = get_3d_data(
+            nc_file,
+            "tree_id",
+            ny,
+            nx,
+            dtype=np.int32,
+            storage_factory=_storage_factory,
+        )
 
         resolved_vegetation = {
             "zlad": zlad,
@@ -156,34 +199,22 @@ def Load(filename="output.nc"):
             "bad": bad,
             "tree_id": tree_id,
             "source_has_buildings_3d": "buildings_3d" in nc_file.variables,
-            "source_buildings_3d": None if source_buildings_3d is None else np.array(source_buildings_3d, copy=True),
+            "source_buildings_3d": source_buildings_3d,
             "source_buildings_3d_z": None if z_coords is None else np.array(z_coords, copy=True),
             "source_buildings_2d": np.array(bldg_height, copy=True),
             "source_building_id": np.array(bldg_id, copy=True),
             "source_building_type": np.array(bldg_type, copy=True),
         }
+        model._loaded_rv = resolved_vegetation
+        model.resolved_vegetation = resolved_vegetation
 
-        grid = {}
-        for row in range(ny):
-            for col in range(nx):
-                building_height = float(bldg_height[row, col])
-                building_id = int(bldg_id[row, col])
-                building_type = int(bldg_type[row, col])
-                if building_height <= GridModel.FLOAT_FILL:
-                    building_id = GridModel.INT_FILL
-                    building_type = GridModel.INT_FILL
+    return model, nx, ny, res, dz, ori, resolved_vegetation, georef
 
-                grid[(row, col)] = {
-                    "zt":              float(zt[row, col]),
-                    "vegetation_type": int(veg[row, col]),
-                    "soil_type":       int(soil[row, col]),
-                    "pavement_type":   int(pav[row, col]),
-                    "water_type":      int(water[row, col]),
-                    "building_id":     building_id,
-                    "building_height": building_height,
-                    "building_type":   building_type,
-                    
-                    "water_temperature": float(water_pars[0, row, col]),
-                }
 
-    return grid, nx, ny, res, dz, ori, resolved_vegetation, georef
+def Load(filename="output.nc", surface_config=None):
+    """Backward-compatible wrapper returning the legacy per-cell dictionary."""
+    model, nx, ny, res, dz, ori, resolved_vegetation, georef = LoadModel(
+        filename,
+        surface_config=surface_config,
+    )
+    return model.to_legacy_dict(), nx, ny, res, dz, ori, resolved_vegetation, georef

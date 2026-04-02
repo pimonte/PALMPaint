@@ -49,13 +49,13 @@ else:
     except ImportError as _pil_err:
         print(f"PIL backend not available ({_pil_err}), falling back to Tk backend.")
         _BACKEND_CLASS = tkbackend.TkCanvasBackend
-from base.create_sd import Save
+from base.create_sd import SaveModel
 from base.geo_reference import (
     complete_georeference,
     default_georeference,
     snap_georeference_to_grid,
 )
-from base.load_sd import Load
+from base.load_sd import LoadModel
 import base.surface_config as surface_config
 import base.welcome_screen as welcome_screen
 
@@ -1065,8 +1065,8 @@ class PaintApplication(framework.Framework):
                 if not proceed:
                     return
 
-        save_summary = Save(
-            self.model.to_legacy_dict(),
+        save_summary = SaveModel(
+            self.model,
             self.original_res,
             self.original_dz,
             self.origin,
@@ -1233,7 +1233,10 @@ class PaintApplication(framework.Framework):
         if not file_path:
             return  # No file path provided
         try:
-            grid, nx, ny, res, dz, origin, resolved_vegetation, georef = Load(file_path)
+            model, nx, ny, res, dz, origin, resolved_vegetation, georef = LoadModel(
+                file_path,
+                surface_config=self.surface_config,
+            )
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
             return
@@ -1246,12 +1249,8 @@ class PaintApplication(framework.Framework):
         self.res = res
         self._apply_georeference(georef)
         
-        self.model = gridmodel.GridModel.from_legacy_dict(
-            grid, nx, ny, res, dz, self.surface_config, quantize=False
-        )
+        self.model = model
         self.model.tree_instances = []
-        self.model._loaded_rv = resolved_vegetation
-        self.model.resolved_vegetation = resolved_vegetation
         self._set_export_buildings_3d(bool(resolved_vegetation.get("source_has_buildings_3d")))
         loaded_tid = resolved_vegetation.get("tree_id") if resolved_vegetation else None
         if loaded_tid is not None:
@@ -1278,7 +1277,7 @@ class PaintApplication(framework.Framework):
     def load_project_netcdf(self, event=None):
         """
         Open a file dialog to let the user choose a NetCDF project file,
-        then load it using load_sd.Load() and update the canvas.
+        then load it and update the canvas.
         """
         if not self.confirm_discard_unsaved("Load Project"):
             return

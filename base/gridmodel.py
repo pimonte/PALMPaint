@@ -10,6 +10,8 @@ or a future 3D viewer.
 """
 
 import math
+import os
+import tempfile
 
 import numpy as np
 
@@ -189,6 +191,7 @@ class GridModel:
     INT_FILL   = -127
     FLOAT_FILL = -9999.0
     BUILDING_ID_FILL = -9999
+    TEMP_BACKED_ARRAY_THRESHOLD_BYTES = 64 * 1024 * 1024
 
     @staticmethod
     def infer_vertical_step(coords, fallback):
@@ -284,6 +287,9 @@ class GridModel:
         self.dz = float(dz) if dz is not None else float(res)
         self.show_grid_lines = True
         self.surface_config = surface_config
+        self._temp_store = None
+        self._temp_array_counter = 0
+        self._building_top_cache = None
 
         # Default: bare soil everywhere — derive types from surface_config when available
         _sc = surface_config or {}
@@ -337,6 +343,53 @@ class GridModel:
         # individually selected via tree_instances.  They can only be erased
         # cell-by-cell via remove_loaded_lad_at().
         self._loaded_rv = None
+
+    def _ensure_temp_store(self):
+        if self._temp_store is None:
+            self._temp_store = tempfile.TemporaryDirectory(prefix="palmpaint_arrays_")
+        return self._temp_store.name
+
+    def _should_use_temp_backing(self, shape, dtype, prefer_temp=None):
+        if prefer_temp is not None:
+            return bool(prefer_temp)
+        size_bytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
+        return size_bytes >= self.TEMP_BACKED_ARRAY_THRESHOLD_BYTES
+
+    def allocate_storage(self, shape, dtype, *, fill_value=0, prefer_temp=None, name_prefix="array"):
+        """Allocate an ndarray, using a temporary memmap for large volumes."""
+        dtype = np.dtype(dtype)
+        shape = tuple(int(dim) for dim in shape)
+        if self._should_use_temp_backing(shape, dtype, prefer_temp=prefer_temp):
+            store_dir = self._ensure_temp_store()
+            self._temp_array_counter += 1
+            path = os.path.join(store_dir, f"{name_prefix}_{self._temp_array_counter}.dat")
+            arr = np.memmap(path, dtype=dtype, mode="w+", shape=shape)
+            if fill_value == 0:
+                arr[:] = 0
+            else:
+                arr.fill(fill_value)
+            return arr
+
+        if fill_value == 0:
+            return np.zeros(shape, dtype=dtype)
+        return np.full(shape, fill_value, dtype=dtype)
+
+    def materialize_storage(self, source, *, dtype=None, prefer_temp=None, name_prefix="array"):
+        """Copy source data into regular or temp-backed storage."""
+        arr = np.asarray(source)
+        target_dtype = arr.dtype if dtype is None else np.dtype(dtype)
+        out = self.allocate_storage(
+            arr.shape,
+            target_dtype,
+            prefer_temp=prefer_temp,
+            name_prefix=name_prefix,
+        )
+        out[...] = arr.astype(target_dtype, copy=False)
+        return out
+
+    def _invalidate_building_cache(self):
+        self._building_top_cache = None
+
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
         self.water_pars[:, row, col] = self.FLOAT_FILL
@@ -437,39 +490,31 @@ class GridModel:
         )
         metadata = {}
         for key in keys:
-            value = source.get(key)
-            metadata[key] = None if value is None else np.array(value, copy=True)
+            metadata[key] = source.get(key)
         return metadata
 
-    def _building_volume_mask_from_z(self, z_coords):
-        """Return a boolean volume mask for building occupancy at the given z coordinates."""
-        z_coords = np.asarray(z_coords, dtype=np.float32)
-        if z_coords.size == 0:
-            return np.zeros((0, self.ny, self.nx), dtype=bool)
+    def _building_top_z(self):
+        """Return the top occupied z value per building column, or FLOAT_FILL."""
+        if self._building_top_cache is not None:
+            return self._building_top_cache
 
+        top_z = np.full((self.ny, self.nx), self.FLOAT_FILL, dtype=np.float32)
         source = self.resolved_vegetation if self.resolved_vegetation is not None else self._loaded_rv
-        if source is None:
-            source = self._loaded_rv
-
         source_buildings_3d = None if source is None else source.get("source_buildings_3d")
         source_buildings_3d_z = None if source is None else source.get("source_buildings_3d_z")
         if source_buildings_3d is not None and source_buildings_3d_z is not None:
-            occupied = np.asarray(source_buildings_3d) > 0
             z3d = np.asarray(source_buildings_3d_z, dtype=np.float32)
-            occupied_columns = np.any(occupied, axis=0)
-            if not np.any(occupied_columns):
-                return np.zeros((z_coords.size, self.ny, self.nx), dtype=bool)
-            top_indices = np.argmax(occupied[::-1], axis=0)
-            top_indices = occupied.shape[0] - 1 - top_indices
-            top_z = z3d[top_indices]
-            return occupied_columns[np.newaxis, :, :] & (
-                z_coords[:, np.newaxis, np.newaxis] <= top_z[np.newaxis, :, :]
-            )
+            for iz, z_val in enumerate(z3d):
+                occupied_layer = np.asarray(source_buildings_3d[iz]) > 0
+                if np.any(occupied_layer):
+                    top_z[occupied_layer] = z_val
+            self._building_top_cache = top_z
+            return self._building_top_cache
 
-        has_building_height = self.building_height > self.FLOAT_FILL
-        return has_building_height[np.newaxis, :, :] & (
-            z_coords[:, np.newaxis, np.newaxis] <= self.building_height[np.newaxis, :, :]
-        )
+        valid_heights = self.building_height > self.FLOAT_FILL
+        top_z[valid_heights] = self.building_height[valid_heights]
+        self._building_top_cache = top_z
+        return self._building_top_cache
 
     def _build_tree_generator_params(self, tree):
         """Return generator params for a tree instance or placement request."""
@@ -623,10 +668,10 @@ class GridModel:
         else:
             zlad = ((np.arange(nz, dtype=np.float32) + 0.5) * dz).astype(np.float32, copy=False)
 
-        building_volume = self._building_volume_mask_from_z(zlad)
-        lad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
-        bad = np.zeros((nz, self.ny, self.nx), dtype=np.float32)
-        tree_id_arr = np.zeros((nz, self.ny, self.nx), dtype=np.int32)
+        building_top_z = self._building_top_z()
+        lad = self.allocate_storage((nz, self.ny, self.nx), np.float32, fill_value=0, name_prefix="lad")
+        bad = self.allocate_storage((nz, self.ny, self.nx), np.float32, fill_value=0, name_prefix="bad")
+        tree_id_arr = self.allocate_storage((nz, self.ny, self.nx), np.int32, fill_value=0, name_prefix="tree_id")
         tracked_clipped = set()
         tracked_placed = set()
 
@@ -651,7 +696,7 @@ class GridModel:
         for tree in self.tree_instances:
             tid = tree["id"]
             for iz_g, rr, cc, v, b in self._iter_tree_voxels(tree, dz, nz):
-                if building_volume[iz_g, rr, cc]:
+                if zlad[iz_g] <= building_top_z[rr, cc]:
                     if tid == track_tree_id:
                         tracked_clipped.add((iz_g, rr, cc))
                     continue
@@ -709,6 +754,7 @@ class GridModel:
         }
         building_keys = {"building_id", "building_height", "building_type"}
         if any(key in kwargs for key in building_keys):
+            self._invalidate_building_cache()
             building_id = kwargs.get("building_id", self.building_id[row, col])
             building_height = kwargs.get("building_height", self.building_height[row, col])
             building_type = kwargs.get("building_type", self.building_type[row, col])

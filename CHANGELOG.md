@@ -8,6 +8,25 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.2-alpha] — dev branch (unreleased)
+
+### Added
+- **`GridModel.allocate_storage()`**: allocates arrays as `np.memmap` when the requested size exceeds 64 MB (`TEMP_BACKED_ARRAY_THRESHOLD_BYTES`); otherwise returns a normal `np.ndarray`; backed by a per-model `tempfile.TemporaryDirectory` (`_temp_store`)
+- **`GridModel.materialize_storage()`**: copies an existing array into regular or memmap-backed storage, respecting the size threshold
+- **`GridModel._building_top_z()`**: lazy per-column top-building-height cache (replaces the full `(nz, ny, nx)` boolean volume produced by `_building_volume_mask_from_z()`); invalidated by `_invalidate_building_cache()` whenever building data is modified via `set_pixel()`
+- **`_write_2d_variable()` / `_write_3d_variable()` / `_building_3d_iter()`** in `create_sd.py`: block-streaming helpers that write NetCDF variables row-by-row (2D) or z-layer-by-row-block (3D) to avoid materializing large temporary arrays
+- **`SaveModel()`** in `create_sd.py`: new primary save entry point that accepts a `GridModel` directly; reads 2D arrays straight from model attributes instead of iterating a per-cell dict; `buildings_3d` and `water_pars` are written in blocks without ever allocating the full volume in RAM; old `Save()` retained as a backward-compatible wrapper
+- **`LoadModel()`** in `load_sd.py`: new primary load entry point that returns a fully-populated `GridModel` instead of a legacy per-cell dict; `get_3d_data()` extended with an optional `storage_factory` callback so large 3D variables (buildings_3d, lad, bad, tree_id) are streamed slice-by-slice directly into memmap-backed arrays; old `Load()` retained as a backward-compatible wrapper
+
+### Changed
+- `palmpaint.py` now calls `SaveModel()` / `LoadModel()` directly; the intermediate `from_legacy_dict()` reconstruction step on load is removed
+- `_resolved_vegetation_source_metadata()` no longer deep-copies numpy arrays into metadata (avoids doubling memory for large 3D fields)
+- `_rebuild_resolved_vegetation()` allocates `lad`, `bad`, and `tree_id_arr` via `allocate_storage()` so very large tree volumes are memory-mapped automatically
+
+### Fixed
+- `_building_volume_mask_from_z()` allocated an `(nz, ny, nx)` boolean array on every `_rebuild_resolved_vegetation()` call; replaced with the cached `_building_top_z()` scalar comparison, eliminating the peak memory spike for tall domains
+
+---
 ## [0.5.1-alpha] — dev branch (unreleased)
 
 ### Added
