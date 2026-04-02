@@ -8,7 +8,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
-## [0.5.0-alpha] — dev branch (unreleased)
+## [0.5.1-alpha] — dev branch (unreleased)
 
 ### Added
 - **PIL rendering backend** (`base/pilbackend.py`): new `PilCanvasBackend` class that replaces the per-cell Tkinter `Rectangle` approach with a single `tk.PhotoImage` rebuilt from a numpy array via Pillow; grids of 500×500 and beyond render in well under a second instead of several seconds
@@ -16,7 +16,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
   - Tree and error overlays baked directly into the PIL image via `ImageDraw` (C-level, no individual canvas items)
   - Grid lines rendered only when cells are ≥ 16 display pixels wide
   - Display image side capped at 4096 px (`_MAX_SIDE`) to keep memory usage bounded (~48 MB at 4096×4096 RGB)
-  - Selected automatically on startup; silently falls back to the Tk backend if Pillow is not installed
+  - Selected automatically on startup; falls back to the Tk backend if Pillow is not available, printing the exact `ImportError` message so the cause is immediately visible
 - **`--backend` CLI argument** in `palmpaint.py`: `--backend pil` (default) or `--backend tk` forces the rendering backend at startup
 - **`_run_with_busy_dialog()`** in `palmpaint.py`: runs long-running callbacks in a worker thread while showing a modal dialog with an indeterminate `ttk.Progressbar`; exceptions from the worker are re-raised in the main thread
 - **`GridModel.get_color_array_rgb()`**: vectorised equivalent of calling `get_color()` for every cell; returns an `(ny, nx, 3)` uint8 numpy array; supports `landcover`, `heightmap`, and `soil` view modes

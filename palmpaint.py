@@ -46,7 +46,8 @@ else:
         import base.pilbackend as _pilbackend
         _BACKEND_CLASS = _pilbackend.PilCanvasBackend
         print("Using PIL-based rendering backend (faster).")
-    except ImportError:
+    except ImportError as _pil_err:
+        print(f"PIL backend not available ({_pil_err}), falling back to Tk backend.")
         _BACKEND_CLASS = tkbackend.TkCanvasBackend
 from base.create_sd import Save
 from base.geo_reference import (
