@@ -8,6 +8,42 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.3-alpha] — dev branch (unreleased)
+
+### Added
+- **Select tool**: new toolbar entry for multi-cell selection
+  - Click to select a single cell; Shift-click adds to selection; Ctrl-click toggles
+  - *Select Same Surface* button: expands selection to all cells sharing the same surface kind
+  - *Select By* dropdown + button: extends selection to all cells matching a chosen criterion (zt, building type / height, water type / temperature, vegetation / pavement / soil type)
+  - Top-bar edit fields (zt, surface-specific attributes) with *Apply to Selection*: batch-edits all selected cells at once
+  - Sidebar shows a selection summary (count, surface kind, common/mixed attribute values) while the tool is active
+- **Layer visibility and locking** (View menu, per layer: Vegetation, Pavement, Water, Buildings):
+  - *Show &lt;Layer&gt;*: hides the layer from the canvas without deleting data
+  - *Lock &lt;Layer&gt;*: prevents any paint or selection edit from modifying cells on that layer
+- **Background overlays** (View menu): *Add Heightmap to Background* and *Add Soilmap to Background* blend a grayscale height or soil tint behind the landcover colours
+- **Draw modes** (Brush / Rectangle / Line toggle appended to the top bar for Vegetation, Pavement, Water, Building, and Eraser tools):
+  - *Rectangle*: click-drag defines the bounding box; pixels are flushed on mouse release with a live preview during drag
+  - *Line*: Bresenham line between press and release points with live preview
+  - New helpers `_get_rectangle_cells()`, `_get_line_cells()`, `_get_shape_cells()`, `_paint_shape_cells()`
+- **`EditorState`** dataclass (`base/editor_state.py`): centralises all non-persistent UI state (active view, per-layer visibility / locks, view-specific settings, selection); constructed once at startup and passed to the backend
+- **`GridModel.export_state()` / `GridModel.from_state()`**: lightweight snapshot/restore for undo/redo; replaces `copy.deepcopy()` of the entire model
+- **`GridModel.get_height_grayscale_color()` / `_color_array_height_gray()` / `_color_array_soil()`**: per-cell and vectorised colour helpers used by the new background overlays
+- **`PilCanvasBackend.set_landcover_background_config()`**: configures height/soil tinting parameters without rebuilding the full image
+- **`PilCanvasBackend.show_selection()` / `clear_selection_overlay()`**: renders a selection highlight overlay on selected cells
+
+### Changed
+- `palmpaint.py`: `save_state()` calls `model.export_state()` instead of `copy.deepcopy()`; `undo()` / `redo()` restore via `GridModel.from_state()`
+- `palmpaint.py`: `canvas_zoom_in()`, `canvas_zoom_out()`, and the mousewheel handler now read `self.res` back from `backend.effective_res` after each zoom call instead of multiplying in-place
+- Backend is now constructed with `editor_state=self.editor_state`; `set_view_mode()` and `set_height_view_config()` calls replaced by `_apply_editor_state_to_backend()`
+- `new_project()` and `load_project_netcdf_from_path()` call `_reset_editor_state()`, `_initialize_landcover_background_range()`, `_apply_editor_state_to_backend()`, and `_sync_editor_state_to_ui()` to keep state consistent after project changes
+- All paint paths (brush, fill-all, shape, selection apply) call `_is_paint_locked_at()` and skip locked-layer cells
+- Right-click clear and right-click drag handlers early-exit when the select tool is active
+
+### Fixed
+- `clear_cell_info()` now shows the selection summary instead of the placeholder text while the select tool has an active selection
+- `update_hover_preview()` correctly shows a single-cell preview for the select tool instead of the brush outline
+
+---
 ## [0.5.2-alpha] — dev branch (unreleased)
 
 ### Added

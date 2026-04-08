@@ -29,8 +29,14 @@ class TkCanvasBackend:
         Initial display resolution (pixels per grid cell).
     """
 
-    def __init__(self, root, model, nx, ny, res):
+    # Grid lines are drawn only when each cell is at least this many pixels wide.
+    # Below this threshold the lines are too dense to be useful and only add
+    # rendering cost.  Mirrors the PIL backend's >= 16 px rule.
+    GRID_LINE_MIN_RES: float = 8.0
+
+    def __init__(self, root, model, nx, ny, res, editor_state=None):
         self.model  = model
+        self.editor_state = editor_state
         self.nx = nx
         self.ny = ny
         self.res = res
@@ -40,6 +46,10 @@ class TkCanvasBackend:
         self.height_view_min = 0.0
         self.height_view_step = 1.0
         self.height_view_levels = 10
+        self.show_height_background = False
+        self.show_soil_background = False
+        self.height_bg_min = 0.0
+        self.height_bg_max = 10.0
         self.domain_border_id = None
         self.domain_border_color = "black"
         self.domain_border_width = 2
@@ -48,6 +58,9 @@ class TkCanvasBackend:
         self.default_outline_color = "white"
         self.hover_outline_color = "#ffd166"
         self.hover_outline_width = 2
+        self.selection_outline_color = "#ff6b6b"
+        self.selection_outline_width = 2
+        self.selection_items = []
         self.normal_outline_width = 1
         self._setup_canvas(root, nx, ny, res)
         
@@ -91,7 +104,9 @@ class TkCanvasBackend:
         )
 
     def _get_base_outline_color(self):
-        return self.default_outline_color if self.show_grid_lines else ""
+        if self.show_grid_lines and self.res >= self.GRID_LINE_MIN_RES:
+            return self.default_outline_color
+        return ""
 
     def _draw_domain_border(self):
         """Draw or update the visible border of the paintable domain."""
@@ -134,11 +149,21 @@ class TkCanvasBackend:
         self.res = res
         self.pixels = {}
         outline_color = self._get_base_outline_color()
+        visible_layers = None if self.editor_state is None else self.editor_state.visible_layers()
         for row in range(ny):
             for col in range(nx):
                 x1, y1 = col * res, (ny - 1 - row) * res
                 x2, y2 = x1 + res, y1 + res
-                color = self.model.get_color(row, col, view_mode=self.view_mode)
+                color = self.model.get_color(
+                    row,
+                    col,
+                    view_mode=self.view_mode,
+                    visible_layers=visible_layers,
+                    show_height_background=self.show_height_background,
+                    show_soil_background=self.show_soil_background,
+                    height_bg_min=self.height_bg_min,
+                    height_bg_max=self.height_bg_max,
+                )
                 rect = self.canvas.create_rectangle(
                     x1, y1, x2, y2, fill=color, outline=outline_color, width=self.normal_outline_width
                 )
@@ -147,6 +172,9 @@ class TkCanvasBackend:
         self.canvas.config(scrollregion=(0, 0, nx * res, ny * res))
         self.canvas.xview_moveto(0.0)
         self.canvas.yview_moveto(0.0)
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
         # Defer tree-overlay drawing until update_grid() so loaded projects use
         # the final cell geometry instead of a too-early first draw.
             
@@ -173,6 +201,7 @@ class TkCanvasBackend:
         if self.view_mode == "heightmap":
             z_min = self.height_view_min
             z_max = self.height_view_min + self.height_view_step * self.height_view_levels
+        visible_layers = None if self.editor_state is None else self.editor_state.visible_layers()
 
         for row in range(ny):
             for col in range(nx):
@@ -182,6 +211,11 @@ class TkCanvasBackend:
                     row,
                     col,
                     view_mode=self.view_mode,
+                    visible_layers=visible_layers,
+                    show_height_background=self.show_height_background,
+                    show_soil_background=self.show_soil_background,
+                    height_bg_min=self.height_bg_min,
+                    height_bg_max=self.height_bg_max,
                     z_min=z_min,
                     z_max=z_max,
                     z_step=self.height_view_step,
@@ -204,6 +238,9 @@ class TkCanvasBackend:
         self._draw_domain_border()
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
         self.redraw_tree_overlay()
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
         
         
     def update_pixel(self, row, col):
@@ -214,6 +251,11 @@ class TkCanvasBackend:
                 row,
                 col,
                 view_mode=self.view_mode,
+                visible_layers=None if self.editor_state is None else self.editor_state.visible_layers(),
+                show_height_background=self.show_height_background,
+                show_soil_background=self.show_soil_background,
+                height_bg_min=self.height_bg_min,
+                height_bg_max=self.height_bg_max,
                 z_min=self.height_view_min,
                 z_step=self.height_view_step,
                 levels=self.height_view_levels,
@@ -237,6 +279,11 @@ class TkCanvasBackend:
                     row,
                     col,
                     view_mode=self.view_mode,
+                    visible_layers=None if self.editor_state is None else self.editor_state.visible_layers(),
+                    show_height_background=self.show_height_background,
+                    show_soil_background=self.show_soil_background,
+                    height_bg_min=self.height_bg_min,
+                    height_bg_max=self.height_bg_max,
                     z_min=self.height_view_min,
                     z_step=self.height_view_step,
                     levels=self.height_view_levels,
@@ -252,6 +299,18 @@ class TkCanvasBackend:
         self.height_view_min = float(z_min)
         self.height_view_step = max(1e-6, float(z_step))
         self.height_view_levels = max(1, int(levels))
+
+    def set_landcover_background_config(
+        self,
+        show_height_background=False,
+        show_soil_background=False,
+        height_bg_min=0.0,
+        height_bg_max=10.0,
+    ):
+        self.show_height_background = bool(show_height_background)
+        self.show_soil_background = bool(show_soil_background)
+        self.height_bg_min = float(height_bg_min)
+        self.height_bg_max = float(height_bg_max)
 
     # ------------------------------------------------------------------
     # Zoom
@@ -302,6 +361,10 @@ class TkCanvasBackend:
         # Scale everything around the chosen anchor point.
         self.canvas.scale("all", anchor_x, anchor_y, factor, factor)
 
+        # Track the current cell size so threshold-dependent logic (e.g.
+        # grid-line visibility) sees the correct value after zooming.
+        self.res = self.res * factor
+
         # Update the scroll region after scaling.
         self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
 
@@ -327,6 +390,23 @@ class TkCanvasBackend:
             if total_height > 0:
                 top = self.canvas.canvasy(0) - dy
                 self.canvas.yview_moveto((top - y1) / total_height)
+
+        # Re-evaluate grid-line visibility now that self.res has changed.
+        # This shows/hides outlines crossing the GRID_LINE_MIN_RES threshold
+        # without a full redraw — only itemconfig calls, no geometry changes.
+        outline_color = self._get_base_outline_color()
+        for pixel in self.pixels.values():
+            if pixel.get("outline") != outline_color:
+                self.canvas.itemconfig(
+                    pixel["id"],
+                    outline=outline_color,
+                    width=self.normal_outline_width,
+                )
+                pixel["outline"] = outline_color
+                pixel["width"] = self.normal_outline_width
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
                 
     # ------------------------------------------------------------------
     # Hover effects
@@ -358,6 +438,35 @@ class TkCanvasBackend:
 
         if self.domain_border_id is not None:
             self.canvas.tag_raise(self.domain_border_id)
+        for item in self.selection_items:
+            self.canvas.tag_raise(item)
+
+    def clear_selection_overlay(self):
+        for item_id in self.selection_items:
+            self.canvas.delete(item_id)
+        self.selection_items = []
+
+    def show_selection(self, cells):
+        self.clear_selection_overlay()
+        for row, col in cells:
+            pixel = self.pixels.get((row, col))
+            if pixel is None:
+                continue
+
+            x1, y1, x2, y2 = self.canvas.coords(pixel["id"])
+            selection_id = self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline=self.selection_outline_color,
+                width=self.selection_outline_width,
+                fill="",
+            )
+            self.selection_items.append(selection_id)
+            self.canvas.tag_raise(selection_id)
+
+        if self.domain_border_id is not None:
+            self.canvas.tag_raise(self.domain_border_id)
+        for item in self.selection_items:
+            self.canvas.tag_raise(item)
             
     # ------------------------------------------------------------------
     # Tree overlay
@@ -520,5 +629,6 @@ class TkCanvasBackend:
         self.pixels = {}
         self.domain_border_id = None
         self.hover_items = []
+        self.selection_items = []
         self.clear_tree_overlay()
         self.clear_error_overlay()

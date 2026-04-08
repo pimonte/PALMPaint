@@ -93,8 +93,9 @@ def LoadModel(filename="output.nc", surface_config=None):
 
         # Determine horizontal resolution from the x coordinate variable.
         # The x values are defined as: np.arange(0, nx*dx, dx) + 0.5*dx in create_sd.py
+        # so x[0] = 0.5*dx → dx = 2*x[0] for single-cell grids.
         x = nc_file.variables["x"][:]
-        res = float(x[1] - x[0]) if nx > 1 else 1.0
+        res = float(x[1] - x[0]) if nx > 1 else float(2 * x[0])
 
         z_coords = None
         if "buildings_3d" in nc_file.variables and "z" in nc_file.variables:

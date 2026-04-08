@@ -12,6 +12,7 @@ or a future 3D viewer.
 import math
 import os
 import tempfile
+import copy
 
 import numpy as np
 
@@ -389,6 +390,99 @@ class GridModel:
 
     def _invalidate_building_cache(self):
         self._building_top_cache = None
+
+    def _copy_state_array(self, array, *, name_prefix):
+        if array is None:
+            return None
+        return self.materialize_storage(array, name_prefix=name_prefix)
+
+    def _snapshot_loaded_rv(self):
+        """Return a snapshot of the mutable loaded vegetation base layer."""
+        if self._loaded_rv is None:
+            return None
+        rv = self._loaded_rv
+        return {
+            "zlad": None if rv.get("zlad") is None else np.array(rv["zlad"], copy=True),
+            "lad": self._copy_state_array(rv.get("lad"), name_prefix="undo_lad"),
+            "bad": self._copy_state_array(rv.get("bad"), name_prefix="undo_bad"),
+            "tree_id": self._copy_state_array(rv.get("tree_id"), name_prefix="undo_tree_id"),
+            "source_has_buildings_3d": rv.get("source_has_buildings_3d"),
+            # Source metadata is treated as immutable baseline data and can be shared.
+            "source_buildings_3d": rv.get("source_buildings_3d"),
+            "source_buildings_3d_z": rv.get("source_buildings_3d_z"),
+            "source_buildings_2d": rv.get("source_buildings_2d"),
+            "source_building_id": rv.get("source_building_id"),
+            "source_building_type": rv.get("source_building_type"),
+        }
+
+    def export_state(self):
+        """Return an undo-friendly snapshot of the model state."""
+        return {
+            "nx": self.nx,
+            "ny": self.ny,
+            "res": self.res,
+            "dz": self.dz,
+            "surface_config": self.surface_config,
+            "zt": np.array(self.zt, copy=True),
+            "vegetation_type": np.array(self.vegetation_type, copy=True),
+            "soil_type": np.array(self.soil_type, copy=True),
+            "pavement_type": np.array(self.pavement_type, copy=True),
+            "water_type": np.array(self.water_type, copy=True),
+            "building_id": np.array(self.building_id, copy=True),
+            "building_height": np.array(self.building_height, copy=True),
+            "building_type": np.array(self.building_type, copy=True),
+            "water_pars": np.array(self.water_pars, copy=True),
+            "tree_instances": copy.deepcopy(self.tree_instances),
+            "next_tree_id": self.next_tree_id,
+            "loaded_rv": self._snapshot_loaded_rv(),
+        }
+
+    @classmethod
+    def from_state(cls, state):
+        """Recreate a GridModel from :meth:`export_state` output."""
+        model = cls(
+            state["nx"],
+            state["ny"],
+            state["res"],
+            state["dz"],
+            state.get("surface_config"),
+        )
+        model.zt[:, :] = state["zt"]
+        model.vegetation_type[:, :] = state["vegetation_type"]
+        model.soil_type[:, :] = state["soil_type"]
+        model.pavement_type[:, :] = state["pavement_type"]
+        model.water_type[:, :] = state["water_type"]
+        model.building_id[:, :] = state["building_id"]
+        model.building_height[:, :] = state["building_height"]
+        model.building_type[:, :] = state["building_type"]
+        model.water_pars[:, :, :] = state["water_pars"]
+        model.tree_instances = copy.deepcopy(state.get("tree_instances", []))
+        model.next_tree_id = int(state.get("next_tree_id", 1))
+        loaded_rv = state.get("loaded_rv")
+        if loaded_rv is not None:
+            model._loaded_rv = {
+                "zlad": None if loaded_rv.get("zlad") is None else np.array(loaded_rv["zlad"], copy=True),
+                "lad": model._copy_state_array(loaded_rv.get("lad"), name_prefix="restore_lad"),
+                "bad": model._copy_state_array(loaded_rv.get("bad"), name_prefix="restore_bad"),
+                "tree_id": model._copy_state_array(loaded_rv.get("tree_id"), name_prefix="restore_tree_id"),
+                "source_has_buildings_3d": loaded_rv.get("source_has_buildings_3d"),
+                "source_buildings_3d": loaded_rv.get("source_buildings_3d"),
+                "source_buildings_3d_z": loaded_rv.get("source_buildings_3d_z"),
+                "source_buildings_2d": loaded_rv.get("source_buildings_2d"),
+                "source_building_id": loaded_rv.get("source_building_id"),
+                "source_building_type": loaded_rv.get("source_building_type"),
+            }
+        else:
+            model._loaded_rv = None
+
+        if model.tree_instances:
+            model._rebuild_resolved_vegetation()
+        elif model._loaded_rv is not None:
+            model.resolved_vegetation = model._loaded_rv
+        else:
+            model.resolved_vegetation = {"zlad": None, "lad": None, "bad": None, "tree_id": None}
+        model._invalidate_building_cache()
+        return model
 
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
@@ -982,11 +1076,30 @@ class GridModel:
         display = water_def.get("display", {})
         return display.get("color", "blue")
 
+    def get_height_grayscale_color(self, row, col, z_min=0.0, z_max=10.0):
+        """Map terrain height to grayscale for landcover background display."""
+        z_min = float(z_min)
+        z_max = float(z_max)
+        if not np.isfinite(z_min):
+            z_min = 0.0
+        if not np.isfinite(z_max) or z_max <= z_min:
+            z_max = z_min + max(float(self.dz), 1.0)
+        z_val = float(max(0.0, self.zt[row, col]))
+        frac = (z_val - z_min) / (z_max - z_min)
+        frac = min(max(frac, 0.0), 1.0)
+        gray = int(round(255.0 * frac))
+        return f"#{gray:02x}{gray:02x}{gray:02x}"
+
     def get_color(
         self,
         row,
         col,
         view_mode="landcover",
+        visible_layers=None,
+        show_height_background=False,
+        show_soil_background=False,
+        height_bg_min=0.0,
+        height_bg_max=10.0,
         z_min=0.0,
         z_max=None,
         z_step=1.0,
@@ -1007,12 +1120,22 @@ class GridModel:
                 return "black"
             return self.get_soil_color(row, col)
 
-        if self.water_type[row, col] > self.INT_FILL:
+        visible_layers = set(visible_layers) if visible_layers is not None else {
+            "vegetation", "pavement", "water", "building"
+        }
+
+        if "water" in visible_layers and self.water_type[row, col] > self.INT_FILL:
             return self.get_water_color(row, col)
         # Robust building detection for legacy files with wrapped building_id values.
-        if self.building_id[row, col] > self.INT_FILL or self.building_height[row, col] > 0.0:
+        if (
+            "building" in visible_layers
+            and (
+                self.building_id[row, col] > self.INT_FILL
+                or self.building_height[row, col] > 0.0
+            )
+        ):
             return "black"
-        if self.pavement_type[row, col] > self.INT_FILL:
+        if "pavement" in visible_layers and self.pavement_type[row, col] > self.INT_FILL:
             pav_type = int(self.pavement_type[row, col])
             
             pavement_section = self.surface_config.get("pavement", {})
@@ -1022,7 +1145,7 @@ class GridModel:
             color = display.get("color")
             if color:
                 return color
-        if self.vegetation_type[row, col] > self.INT_FILL:
+        if "vegetation" in visible_layers and self.vegetation_type[row, col] > self.INT_FILL:
             veg_type = int(self.vegetation_type[row, col])
             
             vegetation_section = self.surface_config.get("vegetation", {})
@@ -1033,6 +1156,15 @@ class GridModel:
             if color:
                 return color
 
+        if show_height_background:
+            return self.get_height_grayscale_color(
+                row,
+                col,
+                z_min=height_bg_min,
+                z_max=height_bg_max,
+            )
+        if show_soil_background:
+            return self.get_soil_color(row, col)
         return "white"  # all layers are fill — bare / erased cell
 
     # ------------------------------------------------------------------
@@ -1085,9 +1217,47 @@ class GridModel:
             arr[level_indices == i] = rgb
         return arr
 
+    def _color_array_height_gray(self, arr, z_min=0.0, z_max=10.0):
+        """Fill *arr* in-place with grayscale terrain colours."""
+        z_min = float(z_min)
+        z_max = float(z_max)
+        if not np.isfinite(z_min):
+            z_min = 0.0
+        if not np.isfinite(z_max) or z_max <= z_min:
+            z_max = z_min + max(float(self.dz), 1.0)
+        z_vals = np.maximum(0.0, self.zt.astype(float))
+        frac = np.clip((z_vals - z_min) / (z_max - z_min), 0.0, 1.0)
+        gray = np.rint(255.0 * frac).astype(np.uint8)
+        arr[:, :, 0] = gray
+        arr[:, :, 1] = gray
+        arr[:, :, 2] = gray
+        return arr
+
+    def _color_array_soil(self, arr):
+        """Fill *arr* in-place with soil colours only."""
+        arr[:] = self._hex_to_rgb("#8f7a5a")
+        soil_fb = {
+            1: "#c2b280", 2: "#b49a6a", 3: "#9f8458",
+            4: "#8b6f47", 5: "#6e5438", 6: "#4f3c2c",
+        }
+        for tid, color in soil_fb.items():
+            arr[self.soil_type == tid] = self._hex_to_rgb(color)
+        for type_id, defn in (
+            self.surface_config.get("soil", {}).get("types", {}).items()
+        ):
+            color = defn.get("display", {}).get("color")
+            if color:
+                arr[self.soil_type == int(type_id)] = self._hex_to_rgb(color)
+        return arr
+
     def get_color_array_rgb(
         self,
         view_mode="landcover",
+        visible_layers=None,
+        show_height_background=False,
+        show_soil_background=False,
+        height_bg_min=0.0,
+        height_bg_max=10.0,
         z_min=0.0,
         z_max=None,
         z_step=1.0,
@@ -1113,21 +1283,7 @@ class GridModel:
         if view_mode == "soil":
             # Soil-view: every non-building, non-water cell shows its soil colour.
             # Start with the fallback-of-fallback colour.
-            arr[:] = _hx("#8f7a5a")
-            # Step 1: hardcoded fallback palette for soil types 1–6
-            _SOIL_FB = {
-                1: "#c2b280", 2: "#b49a6a", 3: "#9f8458",
-                4: "#8b6f47", 5: "#6e5438", 6: "#4f3c2c",
-            }
-            for tid, c in _SOIL_FB.items():
-                arr[self.soil_type == tid] = _hx(c)
-            # Step 2: config-defined colours override fallbacks
-            for type_id, defn in (
-                self.surface_config.get("soil", {}).get("types", {}).items()
-            ):
-                c = defn.get("display", {}).get("color")
-                if c:
-                    arr[self.soil_type == int(type_id)] = _hx(c)
+            self._color_array_soil(arr)
             # Step 3: buildings → black
             arr[
                 (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
@@ -1137,31 +1293,46 @@ class GridModel:
             return arr
 
         # ---- landcover (default) -----------------------------------------
+        visible_layers = set(visible_layers) if visible_layers is not None else {
+            "vegetation", "pavement", "water", "building"
+        }
+        if show_height_background:
+            self._color_array_height_gray(
+                arr,
+                z_min=height_bg_min,
+                z_max=height_bg_max,
+            )
+        elif show_soil_background:
+            self._color_array_soil(arr)
         # Apply lowest → highest priority so each layer overwrites the previous.
 
         # Priority 1 (lowest): vegetation
-        for type_id, defn in (
-            self.surface_config.get("vegetation", {}).get("types", {}).items()
-        ):
-            c = defn.get("display", {}).get("color")
-            if c:
-                arr[self.vegetation_type == int(type_id)] = _hx(c)
+        if "vegetation" in visible_layers:
+            for type_id, defn in (
+                self.surface_config.get("vegetation", {}).get("types", {}).items()
+            ):
+                c = defn.get("display", {}).get("color")
+                if c:
+                    arr[self.vegetation_type == int(type_id)] = _hx(c)
 
         # Priority 2: pavement (overwrites vegetation where present)
-        for type_id, defn in (
-            self.surface_config.get("pavement", {}).get("types", {}).items()
-        ):
-            c = defn.get("display", {}).get("color")
-            if c:
-                arr[self.pavement_type == int(type_id)] = _hx(c)
+        if "pavement" in visible_layers:
+            for type_id, defn in (
+                self.surface_config.get("pavement", {}).get("types", {}).items()
+            ):
+                c = defn.get("display", {}).get("color")
+                if c:
+                    arr[self.pavement_type == int(type_id)] = _hx(c)
 
         # Priority 3: building → black
-        arr[
-            (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
-        ] = (0, 0, 0)
+        if "building" in visible_layers:
+            arr[
+                (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
+            ] = (0, 0, 0)
 
         # Priority 4 (highest): water
-        self._apply_water_to_array(arr)
+        if "water" in visible_layers:
+            self._apply_water_to_array(arr)
 
         return arr
 

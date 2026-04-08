@@ -19,6 +19,41 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
 
+class _GridPixelRegistry:
+    """Bounds-based compatibility layer for code expecting a pixel mapping."""
+
+    def __init__(self, nx=0, ny=0):
+        self.resize(nx, ny)
+
+    def resize(self, nx, ny):
+        self.nx = int(nx)
+        self.ny = int(ny)
+
+    def _is_valid_key(self, key):
+        if not isinstance(key, tuple) or len(key) != 2:
+            return False
+        row, col = key
+        return 0 <= row < self.ny and 0 <= col < self.nx
+
+    def __contains__(self, key):
+        return self._is_valid_key(key)
+
+    def get(self, key, default=None):
+        return {} if self._is_valid_key(key) else default
+
+    def keys(self):
+        return ((row, col) for row in range(self.ny) for col in range(self.nx))
+
+    def __iter__(self):
+        return self.keys()
+
+    def __len__(self):
+        return self.nx * self.ny
+
+    def clear(self):
+        self.resize(0, 0)
+
+
 class PilCanvasBackend:
     """Renders a GridModel onto a Tkinter Canvas using a PIL PhotoImage.
 
@@ -50,8 +85,9 @@ class PilCanvasBackend:
         max_er = self._MAX_SIDE / max(nx, ny, 1)
         return max(0.25, min(float(er), max_er))
 
-    def __init__(self, root, model, nx, ny, res):
+    def __init__(self, root, model, nx, ny, res, editor_state=None):
         self.model = model
+        self.editor_state = editor_state
         self.nx = nx
         self.ny = ny
         # effective_res tracks the current zoom level (pixels per cell).
@@ -60,14 +96,12 @@ class PilCanvasBackend:
 
         # PIL image state
         self._base_image = None    # 1 px/cell PIL Image (ny × nx RGB)
-        self._photo_image = None   # scaled tk.PhotoImage shown on canvas
-        self._tk_photo = None      # underlying tk.PhotoImage (for partial put() updates)
+        self._photo_image = None   # scaled ImageTk.PhotoImage shown on canvas
         self._image_id = None      # canvas item id for the photo image
 
-        # Pixel registry – kept as a plain dict {(row, col): {}} so that all
-        # palmpaint.py code that tests ``(r, c) in self.pixels`` or iterates
-        # ``self.pixels.keys()`` continues to work without modification.
-        self.pixels = {}
+        # PIL does not need one Python object per cell; emulate only the small
+        # mapping API surface that palmpaint.py relies on.
+        self.pixels = _GridPixelRegistry(nx, ny)
 
         # View settings (must match TkCanvasBackend attribute names exactly)
         self.show_grid_lines = True
@@ -75,6 +109,10 @@ class PilCanvasBackend:
         self.height_view_min = 0.0
         self.height_view_step = 1.0
         self.height_view_levels = 10
+        self.show_height_background = False
+        self.show_soil_background = False
+        self.height_bg_min = 0.0
+        self.height_bg_max = 10.0
 
         # Domain border
         self.domain_border_id = None
@@ -86,6 +124,9 @@ class PilCanvasBackend:
         self.default_outline_color = "white"
         self.hover_outline_color = "#ffd166"
         self.hover_outline_width = 2
+        self.selection_outline_color = "#ff6b6b"
+        self.selection_outline_width = 2
+        self.selection_items = []
         self.normal_outline_width = 1
 
         self._setup_canvas(root, nx, ny, res)
@@ -140,6 +181,11 @@ class PilCanvasBackend:
         """Rebuild the 1-px-per-cell PIL Image from the model colour array."""
         arr = self.model.get_color_array_rgb(
             view_mode=self.view_mode,
+            visible_layers=None if self.editor_state is None else self.editor_state.visible_layers(),
+            show_height_background=self.show_height_background,
+            show_soil_background=self.show_soil_background,
+            height_bg_min=self.height_bg_min,
+            height_bg_max=self.height_bg_max,
             z_min=self.height_view_min,
             z_step=self.height_view_step,
             levels=self.height_view_levels,
@@ -254,9 +300,6 @@ class PilCanvasBackend:
                 draw.line([(0, y), (w - 1, y)], fill=white, width=1)
 
         self._photo_image = ImageTk.PhotoImage(display)
-        # Cache the underlying tk.PhotoImage so update_pixel/update_pixels can
-        # call tk.PhotoImage.put() for O(cells) partial updates without a full rebuild.
-        self._tk_photo = self._photo_image._PhotoImage__photo
 
     def _put_cell(self, row, col, color_str):
         """Write one cell directly into the displayed tk.PhotoImage via put().
@@ -264,8 +307,11 @@ class PilCanvasBackend:
         Modifies only the er×er pixel block for this cell. Far cheaper than
         _rebuild_display_image() for brush strokes: no image allocation, no
         full Tcl/PhotoImage copy.
+
+        Uses canvas.tk.call() with the public Tcl image name (str(self._photo_image))
+        instead of accessing Pillow's private _PhotoImage__photo attribute.
         """
-        if self._tk_photo is None:
+        if self._photo_image is None:
             return
         er = self.effective_res
         x1 = int(round(col * er))
@@ -276,13 +322,14 @@ class PilCanvasBackend:
         h = max(1, y2 - y1)
         row_str = " ".join([color_str] * w)
         data = " ".join(["{" + row_str + "}"] * h)
-        self._tk_photo.put(data, to=(x1, y1))
+        photo_name = str(self._photo_image)
+        self.canvas.tk.call(photo_name, "put", data, "-to", x1, y1)
         if self.show_grid_lines and er >= 16:
             # Overlay 1-px white grid lines on the top and left edges of the cell.
             white_row = "{" + " ".join(["#ffffff"] * w) + "}"
-            self._tk_photo.put(white_row, to=(x1, y1))
+            self.canvas.tk.call(photo_name, "put", white_row, "-to", x1, y1)
             white_col = " ".join(["{#ffffff}"] * h)
-            self._tk_photo.put(white_col, to=(x1, y1))
+            self.canvas.tk.call(photo_name, "put", white_col, "-to", x1, y1)
 
     def _cell_coords(self, row, col):
         """Return canvas (x1, y1, x2, y2) for the given grid cell."""
@@ -326,8 +373,7 @@ class PilCanvasBackend:
         self.effective_res = self._cap_er(res, nx, ny)
         er = self.effective_res
 
-        # Populate pixel registry for palmpaint.py compatibility
-        self.pixels = {(r, c): {} for r in range(ny) for c in range(nx)}
+        self.pixels.resize(nx, ny)
 
         self._rebuild_base_image()
         self._rebuild_display_image()
@@ -345,6 +391,9 @@ class PilCanvasBackend:
         )
         self.canvas.xview_moveto(0.0)
         self.canvas.yview_moveto(0.0)
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
 
     def update_grid(self, nx, ny, res):
         """Redraw the entire grid from the current model state."""
@@ -353,8 +402,7 @@ class PilCanvasBackend:
         self.effective_res = self._cap_er(res, nx, ny)
         er = self.effective_res
 
-        # Refresh pixel registry (dimensions may have changed)
-        self.pixels = {(r, c): {} for r in range(ny) for c in range(nx)}
+        self.pixels.resize(nx, ny)
 
         self._rebuild_base_image()
         self._rebuild_display_image()
@@ -370,6 +418,9 @@ class PilCanvasBackend:
         self.canvas.config(
             scrollregion=(0, 0, int(round(nx * er)), int(round(ny * er)))
         )
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
 
     def update_pixel(self, row, col):
         """Refresh one cell.
@@ -382,6 +433,11 @@ class PilCanvasBackend:
         color_str = self.model.get_color(
             row, col,
             view_mode=self.view_mode,
+            visible_layers=None if self.editor_state is None else self.editor_state.visible_layers(),
+            show_height_background=self.show_height_background,
+            show_soil_background=self.show_soil_background,
+            height_bg_min=self.height_bg_min,
+            height_bg_max=self.height_bg_max,
             z_min=self.height_view_min,
             z_step=self.height_view_step,
             levels=self.height_view_levels,
@@ -407,6 +463,11 @@ class PilCanvasBackend:
             color_str = self.model.get_color(
                 row, col,
                 view_mode=self.view_mode,
+                visible_layers=None if self.editor_state is None else self.editor_state.visible_layers(),
+                show_height_background=self.show_height_background,
+                show_soil_background=self.show_soil_background,
+                height_bg_min=self.height_bg_min,
+                height_bg_max=self.height_bg_max,
                 z_min=self.height_view_min,
                 z_step=self.height_view_step,
                 levels=self.height_view_levels,
@@ -430,6 +491,9 @@ class PilCanvasBackend:
         if self._photo_image is not None:
             self._rebuild_display_image()
             self.canvas.itemconfig(self._image_id, image=self._photo_image)
+            self.show_selection(
+                () if self.editor_state is None else self.editor_state.selection_cells
+            )
 
     # ------------------------------------------------------------------
     # View mode / height config
@@ -442,6 +506,18 @@ class PilCanvasBackend:
         self.height_view_min = float(z_min)
         self.height_view_step = max(1e-6, float(z_step))
         self.height_view_levels = max(1, int(levels))
+
+    def set_landcover_background_config(
+        self,
+        show_height_background=False,
+        show_soil_background=False,
+        height_bg_min=0.0,
+        height_bg_max=10.0,
+    ):
+        self.show_height_background = bool(show_height_background)
+        self.show_soil_background = bool(show_soil_background)
+        self.height_bg_min = float(height_bg_min)
+        self.height_bg_max = float(height_bg_max)
 
     # ------------------------------------------------------------------
     # Coordinate conversion
@@ -506,6 +582,9 @@ class PilCanvasBackend:
         # Reposition canvas overlays (they don't scale automatically)
         self._draw_domain_border()
         self.clear_hover_preview()
+        self.show_selection(
+            () if self.editor_state is None else self.editor_state.selection_cells
+        )
 
     # ------------------------------------------------------------------
     # Hover effects
@@ -530,6 +609,28 @@ class PilCanvasBackend:
             )
             self.hover_items.append(hover_id)
             self.canvas.tag_raise(hover_id)
+        if self.domain_border_id is not None:
+            self.canvas.tag_raise(self.domain_border_id)
+
+    def clear_selection_overlay(self):
+        for item_id in self.selection_items:
+            self.canvas.delete(item_id)
+        self.selection_items = []
+
+    def show_selection(self, cells):
+        self.clear_selection_overlay()
+        for row, col in cells:
+            if (row, col) not in self.pixels:
+                continue
+            x1, y1, x2, y2 = self._cell_coords(row, col)
+            selection_id = self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline=self.selection_outline_color,
+                width=self.selection_outline_width,
+                fill="",
+            )
+            self.selection_items.append(selection_id)
+            self.canvas.tag_raise(selection_id)
         if self.domain_border_id is not None:
             self.canvas.tag_raise(self.domain_border_id)
 
@@ -617,12 +718,12 @@ class PilCanvasBackend:
     def clear(self):
         """Delete all canvas objects and reset state."""
         self.canvas.delete("all")
-        self.pixels = {}
+        self.pixels.clear()
         self._image_id = None
         self._base_image = None
         self._photo_image = None
-        self._tk_photo = None
         self.domain_border_id = None
         self.hover_items = []
+        self.selection_items = []
         self.clear_tree_overlay()
         self.clear_error_overlay()

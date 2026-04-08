@@ -19,7 +19,6 @@ simple SDs for PALM.
 """
 
 import argparse
-import copy
 import math
 import os
 import threading
@@ -28,6 +27,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
 import tkinter.messagebox as messagebox
+import numpy as np
 
 import base.report as report
 import base.framework as framework
@@ -50,6 +50,7 @@ else:
         print(f"PIL backend not available ({_pil_err}), falling back to Tk backend.")
         _BACKEND_CLASS = tkbackend.TkCanvasBackend
 from base.create_sd import SaveModel
+from base.editor_state import EditorState, LAYER_KEYS
 from base.geo_reference import (
     complete_georeference,
     default_georeference,
@@ -62,6 +63,10 @@ import base.welcome_screen as welcome_screen
 
 
 
+# Surface tools that support rectangle / line draw modes.
+_SHAPE_MODE_TOOLS = frozenset({"vegetation", "pavement", "water", "building", "eraser"})
+
+
 class PaintApplication(framework.Framework):
     origin = default_georeference().as_origin_tuple()  # lat, lon, projected x, projected y
     brush_size = 1
@@ -69,12 +74,36 @@ class PaintApplication(framework.Framework):
     
 
     tool_bar_functions = (
-        "vegetation", "pavement", "water", "building", "eraser", "single_tree")
+        "vegetation", "pavement", "water", "building", "eraser", "single_tree", "select")
     height_tool_bar_functions = ("zt_set", "zt_raise", "zt_lower")
     soil_tool_bar_functions = ()
     selected_tool_bar_function = tool_bar_functions[0]
     selected_height_tool_bar_function = height_tool_bar_functions[0]
     selected_soil_type = 1
+
+    @property
+    def active_view(self):
+        return self.editor_state.active_view
+
+    @active_view.setter
+    def active_view(self, view_mode):
+        self.editor_state.active_view = str(view_mode)
+
+    @property
+    def height_view_min(self):
+        return float(self.editor_state.get_view_settings("heightmap").get("z_min", 0.0))
+
+    @height_view_min.setter
+    def height_view_min(self, value):
+        self.editor_state.get_view_settings("heightmap")["z_min"] = float(value)
+
+    @property
+    def height_view_levels(self):
+        return int(self.editor_state.get_view_settings("heightmap").get("levels", 10))
+
+    @height_view_levels.setter
+    def height_view_levels(self, value):
+        self.editor_state.get_view_settings("heightmap")["levels"] = max(1, int(value))
     
     def get_vegetation_categories(self):
         return self.surface_config["vegetation"]["categories"]
@@ -120,6 +149,392 @@ class PaintApplication(framework.Framework):
         """Persist a GeoReference on the application and keep legacy origin tuple in sync."""
         self.georef = georef
         self.origin = georef.as_origin_tuple()
+
+    def _reset_editor_state(self):
+        self.editor_state = EditorState()
+
+    def _apply_editor_state_to_backend(self):
+        landcover_settings = self.editor_state.get_view_settings("landcover")
+        self.backend.editor_state = self.editor_state
+        self.backend.set_view_mode(self.active_view)
+        self.backend.set_height_view_config(
+            self.height_view_min,
+            self.original_dz,
+            self.height_view_levels,
+        )
+        self.backend.set_landcover_background_config(
+            show_height_background=landcover_settings.get("show_height_background", False),
+            show_soil_background=landcover_settings.get("show_soil_background", False),
+            height_bg_min=landcover_settings.get("height_bg_min", 0.0),
+            height_bg_max=landcover_settings.get("height_bg_max", max(float(self.original_dz), 1.0) * 10.0),
+        )
+
+    def _sync_editor_state_to_ui(self):
+        if hasattr(self, "_layer_visibility_vars"):
+            for layer_name, var in self._layer_visibility_vars.items():
+                var.set(self.editor_state.is_layer_visible(layer_name))
+        if hasattr(self, "_layer_lock_vars"):
+            for layer_name, var in self._layer_lock_vars.items():
+                var.set(self.editor_state.is_layer_locked(layer_name))
+        landcover_settings = self.editor_state.get_view_settings("landcover")
+        if hasattr(self, "_height_background_var"):
+            self._height_background_var.set(landcover_settings.get("show_height_background", False))
+        if hasattr(self, "_soil_background_var"):
+            self._soil_background_var.set(landcover_settings.get("show_soil_background", False))
+        if hasattr(self, "backend"):
+            self.backend.show_selection(self.editor_state.selection_cells)
+
+    def _on_layer_visibility_toggle(self, layer_name):
+        self.editor_state.set_layer_visible(layer_name, self._layer_visibility_vars[layer_name].get())
+        self._apply_editor_state_to_backend()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+
+    def _on_layer_lock_toggle(self, layer_name):
+        self.editor_state.set_layer_locked(layer_name, self._layer_lock_vars[layer_name].get())
+
+    def _initialize_landcover_background_range(self):
+        settings = self.editor_state.get_view_settings("landcover")
+        z_vals = np.maximum(0.0, np.asarray(self.model.zt, dtype=float))
+        z_min = float(np.min(z_vals)) if z_vals.size else 0.0
+        z_max = float(np.max(z_vals)) if z_vals.size else 0.0
+        if z_max <= z_min:
+            z_max = z_min + max(float(self.original_dz), 1.0)
+        settings["height_bg_min"] = z_min
+        settings["height_bg_max"] = z_max
+
+    def _on_height_background_toggle(self):
+        settings = self.editor_state.get_view_settings("landcover")
+        settings["show_height_background"] = self._height_background_var.get()
+        self._apply_editor_state_to_backend()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+
+    def _on_soil_background_toggle(self):
+        settings = self.editor_state.get_view_settings("landcover")
+        settings["show_soil_background"] = self._soil_background_var.get()
+        self._apply_editor_state_to_backend()
+        self.backend.update_grid(self.nx, self.ny, self.res)
+
+    def _cell_matches_locked_layer(self, row, col, layer_name):
+        if layer_name == "building":
+            return self._cell_has_building(row, col)
+        if layer_name == "water":
+            return self.model.water_type[row, col] > self.model.INT_FILL
+        if layer_name == "pavement":
+            return self.model.pavement_type[row, col] > self.model.INT_FILL
+        if layer_name == "vegetation":
+            return (
+                self.model.vegetation_type[row, col] > self.model.INT_FILL
+                and self.model.pavement_type[row, col] <= self.model.INT_FILL
+                and self.model.water_type[row, col] <= self.model.INT_FILL
+                and not self._cell_has_building(row, col)
+            )
+        return False
+
+    def _is_paint_locked_at(self, row, col):
+        return any(
+            self.editor_state.is_layer_locked(layer_name)
+            and self._cell_matches_locked_layer(row, col, layer_name)
+            for layer_name in LAYER_KEYS
+        )
+
+    def clear_selection(self):
+        self.editor_state.clear_selection()
+        self._refresh_selection_ui()
+
+    def set_selection(self, cells, anchor=None, mode="replace"):
+        self.editor_state.set_selection(cells, anchor=anchor, mode=mode)
+        self._refresh_selection_ui()
+
+    def toggle_selection_cell(self, row, col):
+        self.editor_state.toggle_selection_cell(row, col)
+        self._refresh_selection_ui()
+
+    def _refresh_selection_ui(self):
+        if hasattr(self, "backend"):
+            self.backend.show_selection(self.editor_state.selection_cells)
+        if hasattr(self, "cell_info_label"):
+            cell = self.hover_cell if self.hover_cell is not None else self.active_cell
+            if cell is not None:
+                self.show_cell_info(*cell)
+            else:
+                self.clear_cell_info()
+        if (
+            hasattr(self, "top_bar")
+            and self.selected_tool_bar_function == "select"
+            and self.active_view == "landcover"
+        ):
+            self.remove_options_from_top_bar()
+            self.display_options_in_the_top_bar()
+
+    def _get_surface_kind_at(self, row, col):
+        if self.model.water_type[row, col] > self.model.INT_FILL:
+            return "water"
+        if self._cell_has_building(row, col):
+            return "building"
+        if self.model.pavement_type[row, col] > self.model.INT_FILL:
+            return "pavement"
+        if self.model.vegetation_type[row, col] > self.model.INT_FILL:
+            return "vegetation"
+        return "bare"
+
+    def _common_value(self, values, *, float_tol=1e-6):
+        values = list(values)
+        if not values:
+            return None
+        first = values[0]
+        if isinstance(first, float):
+            if all(abs(float(v) - float(first)) <= float_tol for v in values[1:]):
+                return float(first)
+            return None
+        if all(v == first for v in values[1:]):
+            return first
+        return None
+
+    def _selection_reference_cell(self):
+        if self.active_cell in self.editor_state.selection_cells:
+            return self.active_cell
+        if self.editor_state.selection_anchor in self.editor_state.selection_cells:
+            return self.editor_state.selection_anchor
+        if self.editor_state.selection_cells:
+            return next(iter(self.editor_state.selection_cells))
+        return self.active_cell
+
+    def get_selection_summary(self):
+        cells = sorted(self.editor_state.selection_cells)
+        if not cells:
+            return {
+                "count": 0,
+                "surface_kind": None,
+                "mixed": False,
+                "common": {},
+            }
+
+        pixels = [self.model.get_pixel(row, col) for row, col in cells]
+        surface_kinds = [self._get_surface_kind_at(row, col) for row, col in cells]
+        surface_kind = self._common_value(surface_kinds)
+        common = {
+            "zt": self._common_value([float(pixel["zt"]) for pixel in pixels]),
+            "soil_type": self._common_value([int(pixel["soil_type"]) for pixel in pixels]),
+            "vegetation_type": self._common_value([int(pixel["vegetation_type"]) for pixel in pixels]),
+            "pavement_type": self._common_value([int(pixel["pavement_type"]) for pixel in pixels]),
+            "water_type": self._common_value([int(pixel["water_type"]) for pixel in pixels]),
+            "water_temperature": self._common_value([float(pixel["water_temperature"]) for pixel in pixels]),
+            "building_id": self._common_value([int(pixel["building_id"]) for pixel in pixels]),
+            "building_type": self._common_value([int(pixel["building_type"]) for pixel in pixels]),
+            "building_height": self._common_value([float(pixel["building_height"]) for pixel in pixels]),
+        }
+        return {
+            "count": len(cells),
+            "surface_kind": "mixed" if surface_kind is None else surface_kind,
+            "mixed": surface_kind is None,
+            "common": common,
+            "cells": cells,
+        }
+
+    def _get_selection_summary_text(self):
+        summary = self.get_selection_summary()
+        if summary["count"] == 0:
+            return "Selection: none"
+        kind = summary["surface_kind"]
+        text = f"Selection: {summary['count']} cell(s), {kind}"
+        if kind == "building":
+            bid = summary["common"].get("building_id")
+            if bid is not None and bid > self.model.INT_FILL:
+                text += f", id {bid}"
+        elif kind == "water":
+            wtype = summary["common"].get("water_type")
+            if wtype is not None and wtype > self.model.INT_FILL:
+                text += f", type {wtype}"
+        elif kind == "vegetation":
+            vtype = summary["common"].get("vegetation_type")
+            if vtype is not None and vtype > self.model.INT_FILL:
+                text += f", type {vtype}"
+        elif kind == "pavement":
+            ptype = summary["common"].get("pavement_type")
+            if ptype is not None and ptype > self.model.INT_FILL:
+                text += f", type {ptype}"
+        return text
+
+    def _get_select_by_choices(self, ref=None):
+        ref = self._selection_reference_cell() if ref is None else ref
+        if ref is None:
+            return []
+
+        row, col = ref
+        kind = self._get_surface_kind_at(row, col)
+        choices = [("Same zt", "zt")]
+
+        if kind == "building":
+            building_id = int(self.model.building_id[row, col])
+            building_type = int(self.model.building_type[row, col])
+            building_height = float(self.model.building_height[row, col])
+            if building_id > self.model.INT_FILL:
+                choices.insert(0, ("Same building ID", "building_id"))
+            if building_type > self.model.INT_FILL:
+                choices.append(("Same building type", "building_type"))
+            if building_height > self.model.FLOAT_FILL:
+                choices.append(("Same building height", "building_height"))
+        elif kind == "water":
+            water_type = int(self.model.water_type[row, col])
+            water_temperature = float(self.model.water_pars[0, row, col])
+            if water_type > self.model.INT_FILL:
+                choices.insert(0, ("Same water type", "water_type"))
+            if water_temperature > self.model.FLOAT_FILL:
+                choices.append(("Same water temperature", "water_temperature"))
+        elif kind == "vegetation":
+            vegetation_type = int(self.model.vegetation_type[row, col])
+            if vegetation_type > self.model.INT_FILL:
+                choices.insert(0, ("Same vegetation type", "vegetation_type"))
+        elif kind == "pavement":
+            pavement_type = int(self.model.pavement_type[row, col])
+            if pavement_type > self.model.INT_FILL:
+                choices.insert(0, ("Same pavement type", "pavement_type"))
+        elif kind == "bare":
+            soil_type = int(self.model.soil_type[row, col])
+            if soil_type > self.model.INT_FILL:
+                choices.append(("Same soil type", "soil_type"))
+
+        return choices
+
+    def select_by_criterion_from_active(self, criterion):
+        ref = self._selection_reference_cell()
+        if ref is None:
+            return
+        row, col = ref
+        selected = []
+
+        if criterion == "building_id":
+            target = int(self.model.building_id[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.building_id[r, c]) == target
+                ]
+        elif criterion == "building_type":
+            target = int(self.model.building_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.building_type[r, c]) == target
+                ]
+        elif criterion == "building_height":
+            target = float(self.model.building_height[row, col])
+            selected = [
+                (r, c)
+                for r in range(self.ny)
+                for c in range(self.nx)
+                if float(self.model.building_height[r, c]) == target
+            ]
+        elif criterion == "water_type":
+            target = int(self.model.water_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.water_type[r, c]) == target
+                ]
+        elif criterion == "water_temperature":
+            target = float(self.model.water_pars[0, row, col])
+            if target > self.model.FLOAT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if float(self.model.water_pars[0, r, c]) == target
+                ]
+        elif criterion == "vegetation_type":
+            target = int(self.model.vegetation_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.vegetation_type[r, c]) == target
+                ]
+        elif criterion == "pavement_type":
+            target = int(self.model.pavement_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.pavement_type[r, c]) == target
+                ]
+        elif criterion == "soil_type":
+            target = int(self.model.soil_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.soil_type[r, c]) == target
+                ]
+        elif criterion == "zt":
+            target = float(self.model.zt[row, col])
+            selected = [
+                (r, c)
+                for r in range(self.ny)
+                for c in range(self.nx)
+                if float(self.model.zt[r, c]) == target
+            ]
+
+        if not selected:
+            selected = [ref]
+        self.set_selection(selected, anchor=ref, mode=f"select_by:{criterion}")
+
+    def select_same_surface_type_from_active(self):
+        ref = self._selection_reference_cell()
+        if ref is None:
+            return
+        row, col = ref
+        target_kind = self._get_surface_kind_at(row, col)
+        selected = [
+            (r, c)
+            for r in range(self.ny)
+            for c in range(self.nx)
+            if self._get_surface_kind_at(r, c) == target_kind
+        ]
+        self.set_selection(selected, anchor=ref, mode="same_surface")
+
+    def apply_selection_edits(self, **fields):
+        summary = self.get_selection_summary()
+        if summary["count"] == 0:
+            return
+
+        clean_fields = {}
+        water_temperature = None
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if key == "water_temperature":
+                water_temperature = float(value)
+            else:
+                clean_fields[key] = value
+        if not clean_fields and water_temperature is None:
+            return
+
+        self.save_state()
+        affected = []
+        for row, col in summary["cells"]:
+            if self._is_paint_locked_at(row, col):
+                continue
+            if clean_fields:
+                self.update_pixel(row, col, **clean_fields)
+            if water_temperature is not None:
+                self.model.set_water_parameter(0, row, col, water_temperature)
+            affected.append((row, col))
+
+        if affected:
+            self.backend.update_grid(self.nx, self.ny, self.res)
+            self._refresh_selection_ui()
+
+    def select(self):
+        pass
     
     def execute_selected_method(self):
         if self.active_cell is None:
@@ -176,7 +591,7 @@ class PaintApplication(framework.Framework):
                 self.model.building_id[row, col] > self.model.INT_FILL
                 or self.model.building_height[row, col] > 0.0
             )
-            if is_water or is_building:
+            if is_water or is_building or self._is_paint_locked_at(row, col):
                 continue
 
             self.update_pixel(row, col, soil_type=self.selected_soil_type)
@@ -197,6 +612,48 @@ class PaintApplication(framework.Framework):
                         affected_pixels.append((row, col))
         return affected_pixels
     
+    def _get_rectangle_cells(self, r1, c1, r2, c2):
+        """All cells in the axis-aligned bounding box from (r1,c1) to (r2,c2)."""
+        for r in range(min(r1, r2), max(r1, r2) + 1):
+            for c in range(min(c1, c2), max(c1, c2) + 1):
+                if 0 <= r < self.ny and 0 <= c < self.nx:
+                    yield (r, c)
+
+    def _get_line_cells(self, r1, c1, r2, c2):
+        """Bresenham line from (r1,c1) to (r2,c2)."""
+        dr = abs(r2 - r1)
+        dc = abs(c2 - c1)
+        sr = 1 if r2 > r1 else -1
+        sc = 1 if c2 > c1 else -1
+        r, c = r1, c1
+        if dc > dr:
+            err = dc // 2
+            while c != c2:
+                if 0 <= r < self.ny and 0 <= c < self.nx:
+                    yield (r, c)
+                err -= dr
+                if err < 0:
+                    r += sr
+                    err += dc
+                c += sc
+        else:
+            err = dr // 2
+            while r != r2:
+                if 0 <= r < self.ny and 0 <= c < self.nx:
+                    yield (r, c)
+                err -= dc
+                if err < 0:
+                    c += sc
+                    err += dr
+                r += sr
+        if 0 <= r2 < self.ny and 0 <= c2 < self.nx:
+            yield (r2, c2)
+
+    def _get_shape_cells(self, r1, c1, r2, c2):
+        if self.draw_mode == "rectangle":
+            return list(self._get_rectangle_cells(r1, c1, r2, c2))
+        return list(self._get_line_cells(r1, c1, r2, c2))
+
     @property
     def canvas(self):
         """Convenience accessor — delegates to the active render backend."""
@@ -216,6 +673,31 @@ class PaintApplication(framework.Framework):
         kwargs.pop("color", None)
         kwargs.pop("outline", None)
         self.model.set_pixel(row, col, **kwargs)
+
+    def _get_current_tool_pixel_data(self):
+        """Return (pixel_data_dict, water_temp_or_None) for the active surface tool."""
+        reset = self._reset_pixel_payload()
+        tool = self.selected_tool_bar_function
+        if tool == "vegetation":
+            veg_def = self.get_vegetation_definition(self.selected_vegetation_type)
+            reset.update(vegetation_type=self.selected_vegetation_type,
+                         soil_type=veg_def.get("soil_type", self.model.INT_FILL))
+            return reset, None
+        if tool == "pavement":
+            pav_def = self.get_pavement_definition(self.selected_pavement_type)
+            reset.update(pavement_type=self.selected_pavement_type,
+                         soil_type=pav_def.get("soil_type", self.model.INT_FILL))
+            return reset, None
+        if tool == "water":
+            reset.update(water_type=self.selected_water_type)
+            return reset, getattr(self, "selected_water_temperature", None)
+        if tool == "building":
+            reset.update(building_id=self.building_id,
+                         building_height=self.building_height,
+                         building_type=self.building_type)
+            return reset, None
+        # eraser
+        return reset, None
 
     def _reset_pixel_payload(self):
         """Return a fill-value payload that clears one surface/building cell."""
@@ -260,7 +742,7 @@ class PaintApplication(framework.Framework):
         affected = [
             (r, c)
             for r, c in self.get_pixels_in_brush(row, col)
-            if (r, c) in self.pixels
+            if (r, c) in self.pixels and not self._is_paint_locked_at(r, c)
         ]
         for r, c in affected:
             self.update_pixel(r, c, **reset)
@@ -269,6 +751,22 @@ class PaintApplication(framework.Framework):
             else:
                 self.model.clear_water_parameters(r, c)
         self.backend.update_pixels(affected)
+
+    def _paint_shape_cells(self, cells):
+        """Paint *cells* using the current tool's pixel payload. Respects layer locks."""
+        pixel_data, water_temp = self._get_current_tool_pixel_data()
+        affected = []
+        for r, c in cells:
+            if self._is_paint_locked_at(r, c):
+                continue
+            self.update_pixel(r, c, **pixel_data)
+            if water_temp is not None:
+                self.model.set_water_parameter(0, r, c, water_temp)
+            else:
+                self.model.clear_water_parameters(r, c)
+            affected.append((r, c))
+        if affected:
+            self.backend.update_grid(self.nx, self.ny, self.res)
 
     def vegetation(self):
         """Apply vegetation tool to affected pixels."""
@@ -629,6 +1127,9 @@ class PaintApplication(framework.Framework):
            without per-tree IDs) → erase only that one cell from _loaded_rv.
         3. No vegetation data at this cell → do nothing.
         """
+        if self.selected_tool_bar_function == "select":
+            self.clear_selection()
+            return
         if self.selected_tool_bar_function != "single_tree":
             return
         row, col = self.get_mouse_cell(event)
@@ -639,6 +1140,8 @@ class PaintApplication(framework.Framework):
 
     def on_right_click_drag(self, event):
         """Continue erasing while holding right mouse button (single_tree tool only)."""
+        if self.selected_tool_bar_function == "select":
+            return
         if self.selected_tool_bar_function != "single_tree":
             return
         row, col = self.get_mouse_cell(event)
@@ -652,7 +1155,7 @@ class PaintApplication(framework.Framework):
             for (row, col) in self.pixels.keys():
                 is_water = self.model.water_type[row, col] > self.model.INT_FILL
                 is_building = self._cell_has_building(row, col)
-                if is_water or is_building:
+                if is_water or is_building or self._is_paint_locked_at(row, col):
                     continue
                 self.update_pixel(row, col, soil_type=self.selected_soil_type)
             self.backend.update_grid(self.nx, self.ny, self.res)
@@ -666,6 +1169,8 @@ class PaintApplication(framework.Framework):
             soil_type = veg_def.get("soil_type", self.surface_config["soil"]["default_type"])
             pixel_data = {**reset, "vegetation_type": veg_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
+                if self._is_paint_locked_at(row, col):
+                    continue
                 if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
                     continue
                 self.update_pixel(row, col, **pixel_data)
@@ -676,6 +1181,8 @@ class PaintApplication(framework.Framework):
             soil_type = pav_def.get("soil_type", self.surface_config["soil"]["default_type"])
             pixel_data = {**reset, "pavement_type": pavement_type, "soil_type": soil_type}
             for (row, col) in self.pixels.keys():
+                if self._is_paint_locked_at(row, col):
+                    continue
                 if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
                     continue
                 self.update_pixel(row, col, **pixel_data)
@@ -684,6 +1191,8 @@ class PaintApplication(framework.Framework):
             self.update_water_temperature()
             pixel_data = {**reset, "water_type": self.selected_water_type}
             for (row, col) in self.pixels.keys():
+                if self._is_paint_locked_at(row, col):
+                    continue
                 if self._cell_has_building(row, col) or self._cell_has_tree_data(row, col):
                     continue
                 self.update_pixel(row, col, **pixel_data)
@@ -694,10 +1203,14 @@ class PaintApplication(framework.Framework):
                           "building_height": self.building_height,
                           "building_type": self.building_type}
             for (row, col) in self.pixels.keys():
+                if self._is_paint_locked_at(row, col):
+                    continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
         elif self.selected_tool_bar_function == "eraser":
             for (row, col) in self.pixels.keys():
+                if self._is_paint_locked_at(row, col):
+                    continue
                 self.update_pixel(row, col, **reset)
                 self.model.clear_water_parameters(row, col)
         self.backend.update_grid(self.nx, self.ny, self.res)
@@ -727,8 +1240,13 @@ class PaintApplication(framework.Framework):
         self.rescale_grid()
         self.undo_stack.clear()
         self.redo_stack.clear()
+        self._reset_editor_state()
+        self._initialize_landcover_background_range()
+        self._apply_editor_state_to_backend()
+        self._sync_editor_state_to_ui()
 
         self.draw_grid(self.nx, self.ny, self.res)
+        self.set_active_view(self.active_view)
         self.refresh_project_info_labels()
         
     def confirm_discard_unsaved(self, action_name):
@@ -1251,6 +1769,10 @@ class PaintApplication(framework.Framework):
         
         self.model = model
         self.model.tree_instances = []
+        self._reset_editor_state()
+        self._initialize_landcover_background_range()
+        self._apply_editor_state_to_backend()
+        self._sync_editor_state_to_ui()
         self._set_export_buildings_3d(bool(resolved_vegetation.get("source_has_buildings_3d")))
         loaded_tid = resolved_vegetation.get("tree_id") if resolved_vegetation else None
         if loaded_tid is not None:
@@ -1270,6 +1792,7 @@ class PaintApplication(framework.Framework):
 
         
         self.refresh_project_info_labels()
+        self.set_active_view(self.active_view)
         self.dirty = False
         
         print(f"Loaded NetCDF project from {file_path}")
@@ -1290,7 +1813,7 @@ class PaintApplication(framework.Framework):
         self.load_project_netcdf_from_path(file_path)
     
     def save_state(self):
-        self.undo_stack.append(copy.deepcopy(self.model))
+        self.undo_stack.append(self.model.export_state())
         self.redo_stack.clear()
         self.dirty = True
 
@@ -1307,10 +1830,12 @@ class PaintApplication(framework.Framework):
         if self.undo_stack:
             xview, yview = self._capture_canvas_view()
             state = self.undo_stack.pop()
-            self.redo_stack.append(copy.deepcopy(self.model))
-            self.model = state
+            self.redo_stack.append(self.model.export_state())
+            self.model = gridmodel.GridModel.from_state(state)
             self.backend.model = self.model
+            self._apply_editor_state_to_backend()
             self.backend.update_grid(self.nx, self.ny, self.res)
+            self.backend.show_selection(self.editor_state.selection_cells)
             self._restore_canvas_view(xview, yview)
             self.dirty = True
         else:
@@ -1320,10 +1845,12 @@ class PaintApplication(framework.Framework):
         if self.redo_stack:
             xview, yview = self._capture_canvas_view()
             state = self.redo_stack.pop()
-            self.undo_stack.append(copy.deepcopy(self.model))
-            self.model = state
+            self.undo_stack.append(self.model.export_state())
+            self.model = gridmodel.GridModel.from_state(state)
             self.backend.model = self.model
+            self._apply_editor_state_to_backend()
             self.backend.update_grid(self.nx, self.ny, self.res)
+            self.backend.show_selection(self.editor_state.selection_cells)
             self._restore_canvas_view(xview, yview)
             self.dirty = True
         else:
@@ -1351,6 +1878,7 @@ class PaintApplication(framework.Framework):
 
     
     def __init__(self, root,  nx=16, ny=16, res=4, dz=None):
+        self._reset_editor_state()
         self.nx = nx
         self.ny = ny
         self.original_res = res
@@ -1422,12 +1950,15 @@ class PaintApplication(framework.Framework):
         
         self.active_cell = None
         self.hover_cell = None
+        self.draw_mode = "brush"       # "brush" | "rectangle" | "line"
+        self._shape_start_cell = None  # (row, col) set on press; None when idle
         
         super().__init__(root)
         self.rescale_grid()
         self.model = gridmodel.GridModel(
             nx, ny, self.original_res, self.original_dz, self.surface_config
         )
+        self._initialize_landcover_background_range()
         self.create_gui()  # backend is created inside create_gui
         self.backend.draw_grid(self.nx, self.ny, self.res,)
         self.bind_mouse()
@@ -1442,8 +1973,11 @@ class PaintApplication(framework.Framework):
         self.model = gridmodel.GridModel(
             nx, ny, self.original_res, self.original_dz, self.surface_config
         )
+        self._initialize_landcover_background_range()
+        self.editor_state.clear_selection()
         self.backend.model = self.model
         self.backend.clear()
+        self._apply_editor_state_to_backend()
         self.backend.draw_grid(nx, ny, res)
         self.backend.set_grid_lines_visible(self.show_grid_lines)
         self.dirty = False
@@ -1451,6 +1985,7 @@ class PaintApplication(framework.Framework):
     def update_grid(self, nx, ny, res):
         """Redraw all canvas pixels from the current model state."""
         self.backend.update_grid(nx, ny, res)
+        self.backend.show_selection(self.editor_state.selection_cells)
                 
                 
         
@@ -1461,10 +1996,9 @@ class PaintApplication(framework.Framework):
         self.create_tool_bar()
         self.create_tool_bar_buttons()
         self.backend = _BACKEND_CLASS(
-            self.root, self.model, self.nx, self.ny, self.res
+            self.root, self.model, self.nx, self.ny, self.res, editor_state=self.editor_state
         )
-        self.backend.set_view_mode(self.active_view)
-        self.backend.set_height_view_config(self.height_view_min, self.original_dz, self.height_view_levels)
+        self._apply_editor_state_to_backend()
         self.backend.set_grid_lines_visible(self.show_grid_lines)
         self.create_current_coordinate_label()
         self.create_meter_coordinate_label()
@@ -1544,8 +2078,11 @@ class PaintApplication(framework.Framework):
     
     def on_tool_bar_button_clicked(self, button_index):
         self.selected_tool_bar_function = self.tool_bar_functions[button_index]
+        self._shape_start_cell = None
         self.remove_options_from_top_bar()
         self.display_options_in_the_top_bar()
+        if self.selected_tool_bar_function != "select":
+            self.backend.clear_hover_preview()
         self.bind_mouse()
 
     def on_height_tool_button_clicked(self, button_index):
@@ -1662,6 +2199,42 @@ class PaintApplication(framework.Framework):
 
     def get_cell_info_text(self, row, col):
         """Build the sidebar text for one grid cell."""
+        if (
+            self.selected_tool_bar_function == "select"
+            and self.editor_state.selection_cells
+        ):
+            summary = self.get_selection_summary()
+            lines = [
+                "Selection",
+                f"count: {summary['count']}",
+                f"surface: {summary['surface_kind']}",
+            ]
+            zt = summary["common"].get("zt")
+            lines.append(f"zt: {zt:.2f} m" if zt is not None else "zt: mixed")
+            if summary["surface_kind"] == "water":
+                wtype = summary["common"].get("water_type")
+                wtemp = summary["common"].get("water_temperature")
+                lines.append(f"water type: {wtype}" if wtype is not None else "water type: mixed")
+                lines.append(
+                    f"water temp: {wtemp:.2f} K" if wtemp is not None else "water temp: mixed"
+                )
+            elif summary["surface_kind"] == "building":
+                bid = summary["common"].get("building_id")
+                btype = summary["common"].get("building_type")
+                bh = summary["common"].get("building_height")
+                lines.append(f"building id: {bid}" if bid is not None else "building id: mixed")
+                lines.append(f"building type: {btype}" if btype is not None else "building type: mixed")
+                lines.append(
+                    f"building height: {bh:.2f} m" if bh is not None else "building height: mixed"
+                )
+            elif summary["surface_kind"] == "vegetation":
+                vtype = summary["common"].get("vegetation_type")
+                lines.append(f"vegetation type: {vtype}" if vtype is not None else "vegetation type: mixed")
+            elif summary["surface_kind"] == "pavement":
+                ptype = summary["common"].get("pavement_type")
+                lines.append(f"pavement type: {ptype}" if ptype is not None else "pavement type: mixed")
+            return "\n".join(lines)
+
         if not (0 <= row < self.ny and 0 <= col < self.nx):
             return "Cell info\nzt: -\nsurface: -\nsoil: -"
 
@@ -1744,11 +2317,20 @@ class PaintApplication(framework.Framework):
 
     def clear_cell_info(self):
         """Reset the sidebar cell info when the mouse leaves the canvas."""
-        self.cell_info_label.config(text="Cell info\nzt: -\nsurface: -\nsoil: -")  
+        if self.selected_tool_bar_function == "select" and self.editor_state.selection_cells:
+            ref = self._selection_reference_cell()
+            if ref is not None:
+                self.cell_info_label.config(text=self.get_cell_info_text(*ref))
+                return
+        self.cell_info_label.config(text="Cell info\nzt: -\nsurface: -\nsoil: -")
     def update_hover_preview(self, row, col):
         """Preview all cells affected by the current brush."""
         if not (0 <= row < self.ny and 0 <= col < self.nx):
             self.backend.clear_hover_preview()
+            return
+
+        if self.selected_tool_bar_function == "select":
+            self.backend.show_hover_preview([(row, col)])
             return
 
         if self.selected_tool_bar_function == "single_tree":
@@ -1766,6 +2348,12 @@ class PaintApplication(framework.Framework):
             if not cells:
                 cells = [(row, col)]
             self.backend.show_hover_preview(cells)
+        elif (self.draw_mode != "brush"
+              and self.selected_tool_bar_function in _SHAPE_MODE_TOOLS
+              and self._shape_start_cell is not None):
+            r1, c1 = self._shape_start_cell
+            cells = self._get_shape_cells(r1, c1, row, col)
+            self.backend.show_hover_preview(cells if cells else [(row, col)])
         else:
             affected_pixels = self.get_pixels_in_brush(row, col)
             self.backend.show_hover_preview(affected_pixels)
@@ -1803,16 +2391,31 @@ class PaintApplication(framework.Framework):
         self.canvas.unbind("<Button-5>")
 
     def on_mouse_button_pressed(self, event):
-        self.save_state()
-        
         row, col = self.set_active_cell_from_event(event)
         self.show_current_coordinates(row, col)
         self.show_meter_coordinates(row, col)
         self.show_cell_info(row, col)
         self.update_hover_preview(row, col)
 
+        if self.selected_tool_bar_function == "select":
+            if not (0 <= row < self.ny and 0 <= col < self.nx):
+                return
+            if event.state & 0x0004:
+                self.toggle_selection_cell(row, col)
+            elif event.state & 0x0001:
+                cells = set(self.editor_state.selection_cells)
+                cells.add((row, col))
+                self.set_selection(cells, anchor=(row, col), mode="add")
+            else:
+                self.set_selection([(row, col)], anchor=(row, col), mode="replace")
+            return
+
+        if self.draw_mode != "brush" and self.selected_tool_bar_function in _SHAPE_MODE_TOOLS:
+            self._shape_start_cell = (row, col)
+            return
+        self.save_state()
         self.execute_selected_method()
-        
+
     def on_mouse_button_pressed_motion(self, event):
         row, col = self.set_active_cell_from_event(event)
         self.show_current_coordinates(row, col)
@@ -1820,12 +2423,31 @@ class PaintApplication(framework.Framework):
         self.show_cell_info(row, col)
         self.update_hover_preview(row, col)
 
+        if self.selected_tool_bar_function == "select":
+            return
+
         # Single-tree placement fires only on click, not on drag
         if self.selected_tool_bar_function != "single_tree":
-            self.execute_selected_method()
+            if self.draw_mode != "brush" and self.selected_tool_bar_function in _SHAPE_MODE_TOOLS:
+                pass  # preview only — painting deferred to mouse release
+            else:
+                self.execute_selected_method()
 
     def on_mouse_button_released(self, event):
-        pass
+        if self.draw_mode == "brush" or self.selected_tool_bar_function not in _SHAPE_MODE_TOOLS:
+            self._shape_start_cell = None
+            return
+        if self._shape_start_cell is None:
+            return
+        row, col = self.set_active_cell_from_event(event)
+        r1, c1 = self._shape_start_cell
+        self._shape_start_cell = None
+        cells = self._get_shape_cells(r1, c1, row, col)
+        if not cells:
+            return
+        self.save_state()
+        self._paint_shape_cells(cells)
+        self.backend.clear_hover_preview()
 
     def on_mouse_unpressed_motion(self, event):
         row, col = self.set_hover_cell_from_event(event)
@@ -1911,11 +2533,11 @@ class PaintApplication(framework.Framework):
         self._zoom_pending_anchor = (None, None)
         if self.is_panning or time.monotonic() < self.zoom_block_until:
             return
-        self.res *= factor
         if ax is not None:
             self.backend.zoom(factor, ax, ay)
         else:
             self.backend.zoom(factor)
+        self.res = self.backend.effective_res
 
     def on_mousewheel_zoom(self, event):
         if self.should_block_zoom(event):
@@ -1965,6 +2587,43 @@ class PaintApplication(framework.Framework):
         )
         self.build_menu(menu_definitions)
         self.menubar = self.root.nametowidget(self.root["menu"])
+        view_menu = self.root.nametowidget(self.menubar.entrycget(1, "menu"))
+        self._layer_visibility_vars = {}
+        self._layer_lock_vars = {}
+        self._height_background_var = tk.BooleanVar(
+            value=self.editor_state.get_view_settings("landcover").get("show_height_background", False)
+        )
+        self._soil_background_var = tk.BooleanVar(
+            value=self.editor_state.get_view_settings("landcover").get("show_soil_background", False)
+        )
+        view_menu.add_separator()
+        for layer_name in LAYER_KEYS:
+            label = "Buildings" if layer_name == "building" else layer_name.capitalize()
+            visibility_var = tk.BooleanVar(value=self.editor_state.is_layer_visible(layer_name))
+            lock_var = tk.BooleanVar(value=self.editor_state.is_layer_locked(layer_name))
+            self._layer_visibility_vars[layer_name] = visibility_var
+            self._layer_lock_vars[layer_name] = lock_var
+            view_menu.add_checkbutton(
+                label=f"Show {label}",
+                variable=visibility_var,
+                command=lambda ln=layer_name: self._on_layer_visibility_toggle(ln),
+            )
+            view_menu.add_checkbutton(
+                label=f"Lock {label}",
+                variable=lock_var,
+                command=lambda ln=layer_name: self._on_layer_lock_toggle(ln),
+            )
+        view_menu.add_separator()
+        view_menu.add_checkbutton(
+            label="Add Heightmap to Background",
+            variable=self._height_background_var,
+            command=self._on_height_background_toggle,
+        )
+        view_menu.add_checkbutton(
+            label="Add Soilmap to Background",
+            variable=self._soil_background_var,
+            command=self._on_soil_background_toggle,
+        )
         extras_menu = self.root.nametowidget(self.menubar.entrycget(self.menubar.index("end"), "menu"))
         self._export_buildings_3d_var = tk.BooleanVar(value=self.export_buildings_3d)
         extras_menu.add_separator()
@@ -1996,7 +2655,7 @@ class PaintApplication(framework.Framework):
     def set_active_view(self, view_mode):
         """Switch display mode and refresh top bar + canvas."""
         self.active_view = view_mode
-        self.backend.set_view_mode(view_mode)
+        self._apply_editor_state_to_backend()
         self.create_tool_bar_buttons()
         self.update_height_legend_visibility()
         self.remove_options_from_top_bar()
@@ -2034,12 +2693,12 @@ class PaintApplication(framework.Framework):
         
         
     def canvas_zoom_in(self, event=None):
-        self.res *= 1.2
         self.backend.zoom(1.2)
+        self.res = self.backend.effective_res
 
     def canvas_zoom_out(self, event=None):
-        self.res *= 0.8
         self.backend.zoom(0.8)
+        self.res = self.backend.effective_res
         
     def vegetation_options(self):
         """Display vegetation category buttons and type dropdown in the top bar."""
@@ -2072,15 +2731,12 @@ class PaintApplication(framework.Framework):
             "<<ComboboxSelected>>",
             self.on_vegetation_type_selected
         )
+        self._append_draw_mode_buttons()
+
     def set_vegetation_category_and_refresh_ui(self, category):
         self.set_vegetation_category(category)
         self.remove_options_from_top_bar()
         self.display_options_in_the_top_bar()    
-        
-    def set_vegetation_category(self, category):
-        """Set active vegetation category and refresh dropdown."""
-        self.selected_vegetation_category = category
-        self.refresh_vegetation_dropdown()
         
     def refresh_vegetation_dropdown(self):
         """Refresh dropdown values based on the selected vegetation category."""
@@ -2144,7 +2800,8 @@ class PaintApplication(framework.Framework):
             "<<ComboboxSelected>>",
             self.on_pavement_type_selected
         )
-        
+        self._append_draw_mode_buttons()
+
     def set_pavement_category(self, category):
         """Set active pavement category and choose its default type."""
         self.selected_pavement_category = category
@@ -2228,7 +2885,8 @@ class PaintApplication(framework.Framework):
 
         self.water_temperature_entry.bind("<FocusOut>", self.update_water_temperature)
         self.water_temperature_entry.bind("<Return>", self.update_water_temperature)
-        
+        self._append_draw_mode_buttons()
+
     def set_water_category(self, category):
         """Set active water category and choose its default type."""
         self.selected_water_category = category
@@ -2309,7 +2967,29 @@ class PaintApplication(framework.Framework):
         self.building_type_spinbox = tk.Spinbox(
             self.top_bar, from_=1, to=6, width=3, textvariable=initial_type, command=self.update_building_attributes)
         self.building_type_spinbox.pack(side="left")
-               
+        self._append_draw_mode_buttons()
+
+    def eraser_options(self):
+        self._append_draw_mode_buttons()
+
+    def _append_draw_mode_buttons(self):
+        """Append Brush / Rectangle / Line mode toggle to the top-bar."""
+        tk.Label(self.top_bar, text="Mode:").pack(side="left", padx=(15, 2))
+        for mode, label in (("brush", "Brush"), ("rectangle", "Rectangle"), ("line", "Line")):
+            btn = tk.Button(
+                self.top_bar,
+                text=label,
+                relief="sunken" if self.draw_mode == mode else "raised",
+                command=lambda m=mode: self._set_draw_mode(m),
+            )
+            btn.pack(side="left", padx=2)
+
+    def _set_draw_mode(self, mode):
+        self.draw_mode = mode
+        self._shape_start_cell = None
+        self.remove_options_from_top_bar()
+        self.display_options_in_the_top_bar()
+
     def update_building_attributes(self):
         """
         Update the current building attributes based on spinbox values.
@@ -2329,6 +3009,188 @@ class PaintApplication(framework.Framework):
         if hasattr(self, "building_height_var"):
             self.building_height_var.set(self.building_height)
         self.building_type = int(self.building_type_spinbox.get())
+
+    def _parse_int_or_none(self, value):
+        value = str(value).strip()
+        if not value:
+            return None
+        return int(value)
+
+    def _parse_float_or_none(self, value):
+        value = str(value).strip()
+        if not value:
+            return None
+        return float(value)
+
+    def _selection_common_display(self, value, *, float_fmt=None):
+        if value is None:
+            return ""
+        if isinstance(value, float) and float_fmt is not None:
+            return format(value, float_fmt)
+        return str(value)
+
+    def _on_apply_selection_clicked(self):
+        summary = self.get_selection_summary()
+        if summary["count"] == 0:
+            return
+
+        try:
+            fields = {}
+            if getattr(self, "_selection_zt_var", None) is not None:
+                value = self._parse_float_or_none(self._selection_zt_var.get())
+                if value is not None:
+                    fields["zt"] = self.quantize_height(value)
+
+            if summary["mixed"]:
+                self.apply_selection_edits(**fields)
+                return
+
+            kind = summary["surface_kind"]
+            if kind == "water":
+                value = self._parse_int_or_none(self._selection_water_type_var.get())
+                if value is not None:
+                    fields["water_type"] = value
+                value = self._parse_float_or_none(self._selection_water_temp_var.get())
+                if value is not None:
+                    fields["water_temperature"] = value
+            elif kind == "building":
+                value = self._parse_int_or_none(self._selection_building_id_var.get())
+                if value is not None:
+                    fields["building_id"] = value
+                value = self._parse_int_or_none(self._selection_building_type_var.get())
+                if value is not None:
+                    fields["building_type"] = value
+                value = self._parse_float_or_none(self._selection_building_height_var.get())
+                if value is not None:
+                    fields["building_height"] = gridmodel.GridModel.quantize_building_height(
+                        value, self.original_dz
+                    )
+            elif kind == "vegetation":
+                value = self._parse_int_or_none(self._selection_vegetation_type_var.get())
+                if value is not None:
+                    fields["vegetation_type"] = value
+            elif kind == "pavement":
+                value = self._parse_int_or_none(self._selection_pavement_type_var.get())
+                if value is not None:
+                    fields["pavement_type"] = value
+
+            self.apply_selection_edits(**fields)
+        except ValueError:
+            messagebox.showerror(
+                "Invalid selection input",
+                "Please enter valid numeric values before applying the selection edit.",
+            )
+
+    def select_options(self):
+        summary = self.get_selection_summary()
+        ref = self._selection_reference_cell()
+        select_by_choices = self._get_select_by_choices(ref)
+        tk.Label(
+            self.top_bar,
+            text=self._get_selection_summary_text(),
+        ).pack(side="left", padx=6)
+
+        tk.Button(
+            self.top_bar,
+            text="Select Same Surface",
+            command=self.select_same_surface_type_from_active,
+        ).pack(side="left", padx=4)
+        tk.Label(self.top_bar, text="Select By:").pack(side="left", padx=(8, 2))
+        self._select_by_label_to_criterion = {
+            label: criterion for label, criterion in select_by_choices
+        }
+        self._select_by_var = tk.StringVar(
+            value=select_by_choices[0][0] if select_by_choices else ""
+        )
+        self._select_by_combobox = ttk.Combobox(
+            self.top_bar,
+            textvariable=self._select_by_var,
+            state="readonly",
+            width=22,
+            values=[label for label, _criterion in select_by_choices],
+        )
+        self._select_by_combobox.pack(side="left", padx=2)
+        tk.Button(
+            self.top_bar,
+            text="Apply Select By",
+            command=lambda: self.select_by_criterion_from_active(
+                self._select_by_label_to_criterion.get(self._select_by_var.get(), "zt")
+            ),
+        ).pack(side="left", padx=4)
+        tk.Button(
+            self.top_bar,
+            text="Clear",
+            command=self.clear_selection,
+        ).pack(side="left", padx=4)
+
+        if summary["count"] == 0:
+            tk.Label(
+                self.top_bar,
+                text="Click to select, Shift-click adds, Ctrl-click toggles.",
+            ).pack(side="left", padx=10)
+            return
+
+        common = summary["common"]
+        self._selection_zt_var = tk.StringVar(
+            value=self._selection_common_display(common.get("zt"), float_fmt=".2f")
+        )
+        tk.Label(self.top_bar, text="zt (m):").pack(side="left", padx=(10, 2))
+        tk.Entry(self.top_bar, textvariable=self._selection_zt_var, width=7).pack(side="left", padx=2)
+
+        if summary["mixed"]:
+            tk.Button(
+                self.top_bar,
+                text="Apply to Selection",
+                command=self._on_apply_selection_clicked,
+            ).pack(side="left", padx=8)
+            return
+
+        kind = summary["surface_kind"]
+        if kind == "water":
+            self._selection_water_type_var = tk.StringVar(
+                value=self._selection_common_display(common.get("water_type"))
+            )
+            self._selection_water_temp_var = tk.StringVar(
+                value=self._selection_common_display(common.get("water_temperature"), float_fmt=".2f")
+            )
+            tk.Label(self.top_bar, text="water type:").pack(side="left", padx=(10, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_water_type_var, width=5).pack(side="left", padx=2)
+            tk.Label(self.top_bar, text="temp (K):").pack(side="left", padx=(8, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_water_temp_var, width=7).pack(side="left", padx=2)
+        elif kind == "building":
+            self._selection_building_id_var = tk.StringVar(
+                value=self._selection_common_display(common.get("building_id"))
+            )
+            self._selection_building_type_var = tk.StringVar(
+                value=self._selection_common_display(common.get("building_type"))
+            )
+            self._selection_building_height_var = tk.StringVar(
+                value=self._selection_common_display(common.get("building_height"), float_fmt=".2f")
+            )
+            tk.Label(self.top_bar, text="building id:").pack(side="left", padx=(10, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_building_id_var, width=5).pack(side="left", padx=2)
+            tk.Label(self.top_bar, text="type:").pack(side="left", padx=(8, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_building_type_var, width=5).pack(side="left", padx=2)
+            tk.Label(self.top_bar, text="height (m):").pack(side="left", padx=(8, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_building_height_var, width=7).pack(side="left", padx=2)
+        elif kind == "vegetation":
+            self._selection_vegetation_type_var = tk.StringVar(
+                value=self._selection_common_display(common.get("vegetation_type"))
+            )
+            tk.Label(self.top_bar, text="vegetation type:").pack(side="left", padx=(10, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_vegetation_type_var, width=5).pack(side="left", padx=2)
+        elif kind == "pavement":
+            self._selection_pavement_type_var = tk.StringVar(
+                value=self._selection_common_display(common.get("pavement_type"))
+            )
+            tk.Label(self.top_bar, text="pavement type:").pack(side="left", padx=(10, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_pavement_type_var, width=5).pack(side="left", padx=2)
+
+        tk.Button(
+            self.top_bar,
+            text="Apply to Selection",
+            command=self._on_apply_selection_clicked,
+        ).pack(side="left", padx=8)
 
     def heightmap_options(self):
         """Display edit controls for terrain heights in fixed range mode."""
@@ -2409,11 +3271,7 @@ class PaintApplication(framework.Framework):
 
         self.height_view_min = new_min
         self.height_view_levels = new_levels
-        self.backend.set_height_view_config(
-            self.height_view_min,
-            self.original_dz,
-            self.height_view_levels,
-        )
+        self._apply_editor_state_to_backend()
 
         if hasattr(self, "height_range_hint_label"):
             max_value = self.height_view_min + self.height_view_levels * self.original_dz
