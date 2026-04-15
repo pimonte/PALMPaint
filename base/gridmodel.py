@@ -15,6 +15,7 @@ import tempfile
 import copy
 
 import numpy as np
+from base.building_config import BUILDING_CONFIG, default_building_type
 
 # ---------------------------------------------------------------------------
 # CSS3 / X11 named colour → (R, G, B) lookup table.
@@ -193,6 +194,8 @@ class GridModel:
     FLOAT_FILL = -9999.0
     BUILDING_ID_FILL = -9999
     TEMP_BACKED_ARRAY_THRESHOLD_BYTES = 64 * 1024 * 1024
+    BUILDING_PARAMETER_DIMENSIONS = BUILDING_CONFIG["parameter_dimensions"]
+    BUILDING_PARAMETER_SPECS = BUILDING_CONFIG["parameter_specs"]
 
     @staticmethod
     def infer_vertical_step(coords, fallback):
@@ -269,6 +272,16 @@ class GridModel:
         snapped = math.floor((value + 0.5 * step + 1e-9) / step) * step
         return max(0.0, float(snapped))
 
+    @classmethod
+    def default_building_type(cls, surface_config):
+        """Return the configured building default."""
+        return default_building_type()
+
+    @classmethod
+    def building_parameter_shape(cls, dim_names, ny, nx):
+        """Return the array shape for a named PALM building parameter stack."""
+        return tuple(int(cls.BUILDING_PARAMETER_DIMENSIONS[name]) for name in dim_names) + (int(ny), int(nx))
+
     def __init__(self, nx, ny, res, dz=None, surface_config=None):
         """
         Parameters
@@ -310,8 +323,16 @@ class GridModel:
         self.building_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
 
         self.water_pars = np.full((7, ny, nx), self.FLOAT_FILL, dtype=np.float32)
-        # Future USM per-surface properties — populated by 3D editor?
-        #self.building_surface_pars = {}
+        self.building_pars = {}
+        for name, dim_names in self.BUILDING_PARAMETER_SPECS:
+            arr = self.allocate_storage(
+                self.building_parameter_shape(dim_names, ny, nx),
+                np.float32,
+                fill_value=self.FLOAT_FILL,
+                name_prefix=name,
+            )
+            self.building_pars[name] = arr
+            setattr(self, name, arr)
         
         # --------------------------------------------------------------
         # Single-tree / resolved vegetation support
@@ -432,10 +453,15 @@ class GridModel:
             "building_height": np.array(self.building_height, copy=True),
             "building_type": np.array(self.building_type, copy=True),
             "water_pars": np.array(self.water_pars, copy=True),
+            "building_pars": {
+                name: np.array(arr, copy=True)
+                for name, arr in self.building_pars.items()
+            },
             "tree_instances": copy.deepcopy(self.tree_instances),
             "next_tree_id": self.next_tree_id,
             "loaded_rv": self._snapshot_loaded_rv(),
         }
+        return state
 
     @classmethod
     def from_state(cls, state):
@@ -456,6 +482,12 @@ class GridModel:
         model.building_height[:, :] = state["building_height"]
         model.building_type[:, :] = state["building_type"]
         model.water_pars[:, :, :] = state["water_pars"]
+        building_pars_state = state.get("building_pars", {})
+        for name, _dim_names in cls.BUILDING_PARAMETER_SPECS:
+            if name in building_pars_state:
+                model.building_pars[name][...] = building_pars_state[name]
+            elif name in state:
+                model.building_pars[name][...] = state[name]
         model.tree_instances = copy.deepcopy(state.get("tree_instances", []))
         model.next_tree_id = int(state.get("next_tree_id", 1))
         loaded_rv = state.get("loaded_rv")
@@ -484,9 +516,109 @@ class GridModel:
         model._invalidate_building_cache()
         return model
 
+    def padded(self, n_north, n_south, n_west, n_east):
+        """Return a new GridModel with padding added on each side.
+
+        New border cells receive the same default fill as a freshly created grid.
+        n_north / n_south add rows at the canvas top (north) / bottom (south).
+        n_west / n_east add columns at the canvas left (west) / right (east).
+        """
+        new_nx = self.nx + n_west + n_east
+        new_ny = self.ny + n_north + n_south
+        new = GridModel(new_nx, new_ny, self.res, self.dz, self.surface_config)
+        r = slice(n_north, n_north + self.ny)
+        c = slice(n_west,  n_west  + self.nx)
+        new.zt[r, c]              = self.zt
+        new.vegetation_type[r, c] = self.vegetation_type
+        new.soil_type[r, c]       = self.soil_type
+        new.pavement_type[r, c]   = self.pavement_type
+        new.water_type[r, c]      = self.water_type
+        new.building_id[r, c]     = self.building_id
+        new.building_height[r, c] = self.building_height
+        new.building_type[r, c]   = self.building_type
+        new.water_pars[:, r, c]   = self.water_pars
+        for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
+            new.building_pars[name][(..., r, c)] = self.building_pars[name]
+        if self.resolved_vegetation["lad"] is not None:
+            new.resolved_vegetation["zlad"] = self.resolved_vegetation["zlad"]
+            for key in ("lad", "bad", "tree_id"):
+                src = self.resolved_vegetation[key]
+                if src is not None:
+                    dst = np.full((src.shape[0], new_ny, new_nx),
+                                  self.FLOAT_FILL, dtype=src.dtype)
+                    dst[:, r, c] = src
+                    new.resolved_vegetation[key] = dst
+        new.tree_instances = copy.deepcopy(self.tree_instances)
+        for t in new.tree_instances:
+            t.col += n_west
+            t.row += n_north
+        new.next_tree_id = self.next_tree_id
+        return new
+
+    def cropped(self, col_start, row_start, new_nx, new_ny):
+        """Return a new GridModel sliced to the given sub-domain.
+
+        Parameters use array coordinates: col_start / row_start are 0-based
+        indices where row 0 is the northern (top) edge of the canvas.
+        """
+        new = GridModel(new_nx, new_ny, self.res, self.dz, self.surface_config)
+        r = slice(row_start, row_start + new_ny)
+        c = slice(col_start, col_start + new_nx)
+        new.zt[:, :]              = self.zt[r, c]
+        new.vegetation_type[:, :] = self.vegetation_type[r, c]
+        new.soil_type[:, :]       = self.soil_type[r, c]
+        new.pavement_type[:, :]   = self.pavement_type[r, c]
+        new.water_type[:, :]      = self.water_type[r, c]
+        new.building_id[:, :]     = self.building_id[r, c]
+        new.building_height[:, :] = self.building_height[r, c]
+        new.building_type[:, :]   = self.building_type[r, c]
+        new.water_pars[:, :, :]   = self.water_pars[:, r, c]
+        for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
+            new.building_pars[name][...] = self.building_pars[name][(..., r, c)]
+        if self.resolved_vegetation["lad"] is not None:
+            new.resolved_vegetation["zlad"] = self.resolved_vegetation["zlad"]
+            for key in ("lad", "bad", "tree_id"):
+                src = self.resolved_vegetation[key]
+                if src is not None:
+                    new.resolved_vegetation[key] = np.array(src[:, r, c], copy=True)
+        new.tree_instances = []
+        for t in self.tree_instances:
+            if col_start <= t.col < col_start + new_nx and row_start <= t.row < row_start + new_ny:
+                tc = copy.deepcopy(t)
+                tc.col -= col_start
+                tc.row -= row_start
+                new.tree_instances.append(tc)
+        new.next_tree_id = self.next_tree_id
+        return new
+
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
         self.water_pars[:, row, col] = self.FLOAT_FILL
+
+    def clear_building_parameters(self, row, col):
+        """Reset all advanced building parameters for one pixel."""
+        for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
+            arr = self.building_pars[name]
+            arr[(slice(None),) * (arr.ndim - 2) + (row, col)] = self.FLOAT_FILL
+
+    def clear_building_parameters_where(self, mask):
+        """Reset all advanced building parameters at cells where *mask* is true."""
+        mask = np.asarray(mask, dtype=bool)
+        if not np.any(mask):
+            return
+        for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
+            arr = self.building_pars[name]
+            arr[(slice(None),) * (arr.ndim - 2) + (mask,)] = self.FLOAT_FILL
+
+    def get_building_color(self, row, col):
+        """Resolve building color from surface configuration."""
+        building_type = int(self.building_type[row, col])
+        building_section = BUILDING_CONFIG
+        building_types = building_section.get("types", {})
+        default_type = self.default_building_type(self.surface_config)
+        building_def = building_types.get(building_type) or building_types.get(default_type, {})
+        display = building_def.get("display", {})
+        return display.get("color", "black")
 
     # ------------------------------------------------------------------
     # Single-tree management
@@ -865,6 +997,7 @@ class GridModel:
                 self.building_id[row, col] = self.INT_FILL
                 self.building_height[row, col] = self.FLOAT_FILL
                 self.building_type[row, col] = self.INT_FILL
+                self.clear_building_parameters(row, col)
             else:
                 self.building_id[row, col] = int(building_id)
                 self.building_height[row, col] = stored_height
@@ -903,6 +1036,7 @@ class GridModel:
         removed_mask = self.building_height <= self.FLOAT_FILL
         self.building_id[removed_mask] = self.INT_FILL
         self.building_type[removed_mask] = self.INT_FILL
+        self.clear_building_parameters_where(removed_mask)
 
         terrain_changed = int(np.count_nonzero(np.abs(self.zt - old_zt) > 1e-6))
         building_changed = int(
@@ -1134,7 +1268,7 @@ class GridModel:
                 or self.building_height[row, col] > 0.0
             )
         ):
-            return "black"
+            return self.get_building_color(row, col)
         if "pavement" in visible_layers and self.pavement_type[row, col] > self.INT_FILL:
             pav_type = int(self.pavement_type[row, col])
             
@@ -1324,11 +1458,21 @@ class GridModel:
                 if c:
                     arr[self.pavement_type == int(type_id)] = _hx(c)
 
-        # Priority 3: building → black
+        # Priority 3: building
         if "building" in visible_layers:
-            arr[
-                (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
-            ] = (0, 0, 0)
+            building_mask = (self.building_id > self.INT_FILL) | (self.building_height > 0.0)
+            default_building_color = self._hex_to_rgb(
+                BUILDING_CONFIG.get("types", {}).get(
+                    self.default_building_type(self.surface_config),
+                    {},
+                ).get("display", {}).get("color", "black")
+            )
+            arr[building_mask] = default_building_color
+            for type_id, defn in (
+                BUILDING_CONFIG.get("types", {}).items()
+            ):
+                color = defn.get("display", {}).get("color", "black")
+                arr[building_mask & (self.building_type == int(type_id))] = _hx(color)
 
         # Priority 4 (highest): water
         if "water" in visible_layers:

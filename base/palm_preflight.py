@@ -11,10 +11,14 @@ from __future__ import annotations
 from collections import deque
 
 import numpy as np
+from base.building_config import default_building_type
 
 
-DEFAULT_BUILDING_TYPE = 1
 CAVITY_THRESHOLD = 9
+
+
+def _default_building_type(surface_config):
+    return default_building_type()
 
 
 def _building_footprint(building_id, building_height, float_fill):
@@ -217,7 +221,7 @@ def _fill_cavities(classes, col_id):
 # Reconstruct 2-D arrays from the filtered 3-D classification
 # ---------------------------------------------------------------------------
 
-def _reconstruct_2d(classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill):
+def _reconstruct_2d(classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type):
     """Derive zt / building_height / building_id / building_type from the
     filtered voxel classes array using vectorised NumPy operations."""
     nz, ny, nx = classes.shape
@@ -250,7 +254,7 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
     needs_id = has_building & (new_building_id <= 0)
     if np.any(needs_id):
         padded_id   = np.where(new_building_id > 0,   new_building_id,   0)
-        padded_type = np.where(new_building_id > 0,   new_building_type, DEFAULT_BUILDING_TYPE)
+        padded_type = np.where(new_building_id > 0,   new_building_type, default_building_type)
         for shift_axis, shift_dir in ((0, 1), (0, -1), (1, 1), (1, -1)):
             still_needs = needs_id & (new_building_id <= 0)
             if not np.any(still_needs):
@@ -271,11 +275,11 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
         # Fallback for isolated new cells with no nearby label
         still_needs = needs_id & (new_building_id <= 0)
         new_building_id[still_needs]   = 1
-        new_building_type[still_needs] = DEFAULT_BUILDING_TYPE
+        new_building_type[still_needs] = default_building_type
 
     # Fix missing building_type on cells that already have a valid id
     bad_type = has_building & (new_building_id > 0) & (new_building_type <= int_fill)
-    new_building_type[bad_type] = DEFAULT_BUILDING_TYPE
+    new_building_type[bad_type] = default_building_type
 
     # Clear building fields for cells that lost their building after filtering
     surface_only = (np.asarray(building_id) > 0) & np.isfinite(np.asarray(building_height, dtype=np.float32)) \
@@ -307,7 +311,7 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill):
+def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill, default_building_type=1):
     """Apply PALM-style hole and cavity filtering to a discrete constant-dz mask."""
     classes, col_id, col_type, step = _build_topography_classification(
         zt, building_height, building_id, building_type, dz, float_fill
@@ -318,7 +322,7 @@ def apply_topography_filters(zt, building_height, building_id, building_type, dz
     cavity_count, cavity_fill_mask = _fill_cavities(classes, col_id)
 
     new_zt, new_bh, new_bid, new_btype = _reconstruct_2d(
-        classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill
+        classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type
     )
 
     return {
@@ -345,6 +349,7 @@ def preview_filter_sweep(model):
         model.dz,
         model.FLOAT_FILL,
         model.INT_FILL,
+        _default_building_type(getattr(model, "surface_config", None)),
     )
     preview_mask = filter_result["hole_fill_columns"] | filter_result["cavity_fill_columns"]
     return {
@@ -380,6 +385,13 @@ def apply_filter_sweep(model):
     model.building_height[:, :] = result["preview"]["building_height"]
     model.building_id[:, :] = result["preview"]["building_id"]
     model.building_type[:, :] = result["preview"]["building_type"]
+    lost_building_mask = original_building_mask & ~_building_footprint(
+        model.building_id,
+        model.building_height,
+        model.FLOAT_FILL,
+    )
+    if np.any(lost_building_mask):
+        model.clear_building_parameters_where(lost_building_mask)
     if np.any(new_building_mask):
         model.soil_type[new_building_mask] = model.INT_FILL
         model.vegetation_type[new_building_mask] = model.INT_FILL

@@ -29,6 +29,7 @@ import tkinter.filedialog as fd
 import tkinter.messagebox as messagebox
 import numpy as np
 
+import base.building_config as building_config
 import base.report as report
 import base.framework as framework
 import base.gridmodel as gridmodel
@@ -131,6 +132,17 @@ class PaintApplication(framework.Framework):
 
     def get_water_definition(self, water_type):
         return self.surface_config["water"]["types"][water_type]
+
+    def get_building_categories(self):
+        return building_config.BUILDING_CONFIG.get("categories", {})
+
+    def get_building_types(self):
+        return building_config.BUILDING_CONFIG["types"]
+
+    def get_building_definition(self, building_type):
+        building_types = building_config.BUILDING_CONFIG.get("types", {})
+        default_type = gridmodel.GridModel.default_building_type(self.surface_config)
+        return building_types.get(building_type, building_types.get(default_type, {}))
 
     def get_soil_types(self):
         return self.surface_config["soil"]["types"]
@@ -248,6 +260,217 @@ class PaintApplication(framework.Framework):
     def toggle_selection_cell(self, row, col):
         self.editor_state.toggle_selection_cell(row, col)
         self._refresh_selection_ui()
+
+    def _flood_select(self, seed_row, seed_col):
+        """BFS flood-fill selection of contiguous cells with the same value as the seed."""
+        def cell_key(r, c):
+            if self.active_view == "heightmap":
+                return float(self.model.zt[r, c])
+            if self.active_view == "soil":
+                return int(self.model.soil_type[r, c])
+            # landcover: match on surface kind + type value
+            kind = self._get_surface_kind_at(r, c)
+            if kind == "building":
+                return ("building", int(self.model.building_id[r, c]))
+            if kind == "water":
+                return ("water", int(self.model.water_type[r, c]))
+            if kind == "pavement":
+                return ("pavement", int(self.model.pavement_type[r, c]))
+            if kind == "vegetation":
+                return ("vegetation", int(self.model.vegetation_type[r, c]))
+            return ("bare", 0)
+
+        target = cell_key(seed_row, seed_col)
+        visited = set()
+        result = set()
+        queue = [(seed_row, seed_col)]
+        visited.add((seed_row, seed_col))
+        result.add((seed_row, seed_col))
+        while queue:
+            r, c = queue.pop()
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in visited:
+                    continue
+                if not (0 <= nr < self.ny and 0 <= nc < self.nx):
+                    continue
+                visited.add((nr, nc))
+                if cell_key(nr, nc) == target:
+                    result.add((nr, nc))
+                    queue.append((nr, nc))
+        return result
+
+    def _lasso_select(self, r1, c1, r2, c2):
+        """Rectangle-lasso: find dominant object key in rect, flood-fill its full extent."""
+        rect_cells = list(self._get_rectangle_cells(r1, c1, r2, c2))
+        if not rect_cells:
+            return set()
+
+        def cell_key(r, c):
+            if self.active_view == "heightmap":
+                return float(self.model.zt[r, c])
+            if self.active_view == "soil":
+                return int(self.model.soil_type[r, c])
+            kind = self._get_surface_kind_at(r, c)
+            if kind == "building":
+                return ("building", int(self.model.building_id[r, c]))
+            if kind == "water":
+                return ("water", int(self.model.water_type[r, c]))
+            if kind == "pavement":
+                return ("pavement", int(self.model.pavement_type[r, c]))
+            if kind == "vegetation":
+                return ("vegetation", int(self.model.vegetation_type[r, c]))
+            return ("bare", 0)
+
+        # Count occurrences of each key; pick the most frequent
+        counts = {}
+        for r, c in rect_cells:
+            k = cell_key(r, c)
+            counts[k] = counts.get(k, 0) + 1
+        dominant_key = max(counts, key=counts.__getitem__)
+
+        # Flood-fill the entire grid for all contiguous regions matching dominant_key
+        # that have at least one cell inside the rectangle
+        rect_set = set(rect_cells)
+        visited = set()
+        result = set()
+        for seed in rect_cells:
+            if seed in visited:
+                continue
+            if cell_key(*seed) != dominant_key:
+                visited.add(seed)
+                continue
+            # BFS from this seed
+            region = set()
+            queue = [seed]
+            region.add(seed)
+            while queue:
+                r, c = queue.pop()
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in region:
+                        continue
+                    if not (0 <= nr < self.ny and 0 <= nc < self.nx):
+                        continue
+                    if cell_key(nr, nc) != dominant_key:
+                        continue
+                    region.add((nr, nc))
+                    queue.append((nr, nc))
+            visited |= region
+            result |= region
+        return result
+
+    # ------------------------------------------------------------------
+    # Clipboard: copy / cut / paste / rotate
+    # ------------------------------------------------------------------
+
+    def _copy_selection(self, cut=False):
+        cells = list(self.editor_state.selection_cells)
+        if not cells:
+            return
+        rows = [r for r, c in cells]
+        cols = [c for r, c in cells]
+        r0, c0 = min(rows), min(cols)
+        r1, c1 = max(rows), max(cols)
+        orig_offsets = [(r - r0, c - c0) for r, c in cells]
+        self._clipboard = {
+            "offsets_orig": orig_offsets,
+            "offsets": list(orig_offsets),
+            "cells":   [self.model.get_pixel(r, c) for r, c in cells],
+            "bbox":    (r0, c0, r1, c1),
+        }
+        if cut:
+            self.save_state()
+            fill = {
+                "vegetation_type": self.model.INT_FILL,
+                "pavement_type":   self.model.INT_FILL,
+                "water_type":      self.model.INT_FILL,
+                "building_id":     self.model.INT_FILL,
+                "building_height": self.model.FLOAT_FILL,
+                "building_type":   self.model.INT_FILL,
+            }
+            for r, c in cells:
+                self.model.set_pixel(r, c, quantize=False, **fill)
+            self.backend.update_grid(self.nx, self.ny, self.res)
+
+    def _rotate_clipboard(self, delta_deg):
+        """Add delta_deg (CW) to cumulative rotation and recompute offsets from originals."""
+        if self._clipboard is None:
+            return
+        self._paste_angle = (self._paste_angle + delta_deg) % 360
+        rad = math.radians(self._paste_angle)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        # Rotate original offsets around their own centroid, round to grid.
+        # Array space: row increases downward, col increases rightward.
+        # CW rotation: row' = cos*row + sin*col,  col' = -sin*row + cos*col
+        orig = self._clipboard["offsets_orig"]
+        cr = sum(dr for dr, dc in orig) / len(orig)
+        cc = sum(dc for dr, dc in orig) / len(orig)
+        new_offsets = []
+        for dr, dc in orig:
+            fdr = dr - cr
+            fdc = dc - cc
+            nr = cos_a * fdr + sin_a * fdc + cr
+            nc = -sin_a * fdr + cos_a * fdc + cc
+            new_offsets.append((round(nr), round(nc)))
+        self._clipboard["offsets"] = new_offsets
+        # Recompute bbox from rotated offsets
+        r0, c0, _, _ = self._clipboard["bbox"]
+        all_r = [dr for dr, dc in new_offsets]
+        all_c = [dc for dr, dc in new_offsets]
+        self._clipboard["bbox"] = (r0, c0, r0 + max(all_r) - min(all_r), c0 + max(all_c) - min(all_c))
+
+    def _paste_target_cells(self, anchor_row, anchor_col):
+        """Return list of (row, col, pixel_dict) for the current clipboard centered on anchor."""
+        if self._clipboard is None:
+            return []
+        r0, c0, r1, c1 = self._clipboard["bbox"]
+        center_dr = (r1 - r0) // 2
+        center_dc = (c1 - c0) // 2
+        result = []
+        for (dr, dc), pixel in zip(self._clipboard["offsets"], self._clipboard["cells"]):
+            tr, tc = anchor_row + dr - center_dr, anchor_col + dc - center_dc
+            if 0 <= tr < self.ny and 0 <= tc < self.nx:
+                result.append((tr, tc, pixel))
+        return result
+
+    def _enter_paste_mode(self):
+        if self._clipboard is None:
+            return
+        self._paste_mode = True
+        self._paste_angle = 0.0
+        # Reset offsets to original so re-entering paste starts unrotated
+        self._clipboard["offsets"] = list(self._clipboard["offsets_orig"])
+
+    def _cancel_paste_mode(self):
+        self._paste_mode = False
+        self.backend.show_hover_preview([])
+
+    def _commit_paste(self, anchor_row, anchor_col):
+        targets = self._paste_target_cells(anchor_row, anchor_col)
+        if not targets:
+            return
+        self.save_state()
+        for tr, tc, pixel in targets:
+            self.model.set_pixel(tr, tc, quantize=False, **pixel)
+        self.backend.update_grid(self.nx, self.ny, self.res)
+        pasted_cells = {(tr, tc) for tr, tc, _ in targets}
+        self.set_selection(pasted_cells, anchor=(anchor_row, anchor_col), mode="replace")
+        self._paste_mode = False
+
+    def _on_r_key(self, event=None):
+        if self._paste_mode:
+            shift = event is not None and bool(event.state & 0x0001)
+            delta = 1.0 if shift else 15.0
+            self._rotate_clipboard(delta)
+            if self.hover_cell is not None:
+                preview = [(tr, tc) for tr, tc, _ in
+                           self._paste_target_cells(*self.hover_cell)]
+                self.backend.show_hover_preview(preview)
+
+    def _on_escape_key(self, event=None):
+        if self._paste_mode:
+            self._cancel_paste_mode()
 
     def _refresh_selection_ui(self):
         if hasattr(self, "backend"):
@@ -649,9 +872,49 @@ class PaintApplication(framework.Framework):
         if 0 <= r2 < self.ny and 0 <= c2 < self.nx:
             yield (r2, c2)
 
-    def _get_shape_cells(self, r1, c1, r2, c2):
+    def _get_ellipse_cells(self, r1, c1, r2, c2, force_circle=False):
+        """Filled axis-aligned ellipse inscribed in the bounding box (r1,c1)-(r2,c2).
+
+        If *force_circle* is True the shorter semi-axis is extended so that the
+        result is a circle (in grid-cell space).
+        """
+        cr = (r1 + r2) / 2.0
+        cc = (c1 + c2) / 2.0
+        a = abs(c2 - c1) / 2.0   # horizontal semi-axis (cols)
+        b = abs(r2 - r1) / 2.0   # vertical semi-axis (rows)
+        if force_circle:
+            a = b = max(a, b)
+        if a == 0 and b == 0:
+            r, c = int(round(cr)), int(round(cc))
+            if 0 <= r < self.ny and 0 <= c < self.nx:
+                return [(r, c)]
+            return []
+        # Avoid division by zero when one axis is zero (degenerate line).
+        a2 = a * a if a > 0 else 1e-9
+        b2 = b * b if b > 0 else 1e-9
+        cells = []
+        r_min = int(math.floor(cr - b))
+        r_max = int(math.ceil(cr + b))
+        for r in range(r_min, r_max + 1):
+            if not (0 <= r < self.ny):
+                continue
+            dy = r - cr
+            # x span: (dy/b)^2 + (dx/a)^2 <= 1  =>  dx <= a*sqrt(1-(dy/b)^2)
+            inner = 1.0 - (dy * dy) / b2
+            if inner < 0:
+                continue
+            dx = a * math.sqrt(inner)
+            c_lo = int(math.ceil(cc - dx))
+            c_hi = int(math.floor(cc + dx))
+            for c in range(max(0, c_lo), min(self.nx - 1, c_hi) + 1):
+                cells.append((r, c))
+        return cells
+
+    def _get_shape_cells(self, r1, c1, r2, c2, force_circle=False):
         if self.draw_mode == "rectangle":
             return list(self._get_rectangle_cells(r1, c1, r2, c2))
+        if self.draw_mode == "ellipse":
+            return self._get_ellipse_cells(r1, c1, r2, c2, force_circle=force_circle)
         return list(self._get_line_cells(r1, c1, r2, c2))
 
     @property
@@ -673,6 +936,23 @@ class PaintApplication(framework.Framework):
         kwargs.pop("color", None)
         kwargs.pop("outline", None)
         self.model.set_pixel(row, col, **kwargs)
+
+    def _active_tool_label(self):
+        """Return a short human-readable description of the currently active surface tool."""
+        tool = self.selected_tool_bar_function
+        if tool == "vegetation":
+            veg_def = self.get_vegetation_definition(self.selected_vegetation_type)
+            return f"Vegetation: {veg_def.get('name', self.selected_vegetation_type)}"
+        if tool == "pavement":
+            pav_def = self.get_pavement_definition(self.selected_pavement_type)
+            return f"Pavement: {pav_def.get('name', self.selected_pavement_type)}"
+        if tool == "water":
+            return f"Water type {self.selected_water_type}"
+        if tool == "building":
+            return f"Building (h={self.building_height} m)"
+        if tool == "eraser":
+            return "Eraser (default fill)"
+        return None   # tool does not produce a surface fill
 
     def _get_current_tool_pixel_data(self):
         """Return (pixel_data_dict, water_temp_or_None) for the active surface tool."""
@@ -1023,6 +1303,39 @@ class PaintApplication(framework.Framework):
             self._tree_gen_dialog.deiconify()
             self._tree_gen_dialog.lift()
 
+    def _open_3d_view(self):
+        """Open the 3D view window (requires pyvista)."""
+        from base.threedview import open_3d_view, PYVISTA_AVAILABLE
+        if not PYVISTA_AVAILABLE:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "pyvista required",
+                "Install pyvista to use the 3D view.\n\npip install pyvista",
+                parent=self.root,
+            )
+            return
+        if self._3d_view_thread is not None and self._3d_view_thread.is_alive():
+            return
+        self._3d_view_thread = open_3d_view(self.model)
+
+    def _open_sd_plot_dialog(self):
+        """Open (or show) the Analysis Plots dialog (requires matplotlib)."""
+        from base.sd_plot import SDPlotDialog, MATPLOTLIB_AVAILABLE
+        if not MATPLOTLIB_AVAILABLE:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "matplotlib required",
+                "Install matplotlib to use the analysis plots dialog.\n\n"
+                "pip install matplotlib",
+                parent=self.root,
+            )
+            return
+        if self._sd_plot_dialog is None or not self._sd_plot_dialog.winfo_exists():
+            self._sd_plot_dialog = SDPlotDialog(self.root, self.model, self.georef)
+        else:
+            self._sd_plot_dialog.deiconify()
+            self._sd_plot_dialog.lift()
+
     def _on_generator_apply(self, params_dict):
         """Callback from TreeGeneratorDialog — sync parameters back to spinboxes."""
         from base.tree_species import SHAPE_LABELS
@@ -1278,6 +1591,383 @@ class PaintApplication(framework.Framework):
             self._export_buildings_3d_var.set(self.export_buildings_3d)
         if mark_dirty:
             self.dirty = True
+
+    def add_border(self):
+        """Open the Add Border dialog to extend the grid on each side."""
+        res = self.model.res
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Border")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        unit_var = tk.StringVar(value="cells")
+        symmetric_var = tk.BooleanVar(value=True)
+
+        # Unit radio buttons
+        unit_frame = tk.Frame(dialog)
+        unit_frame.grid(row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 2))
+        tk.Label(unit_frame, text="Unit:").pack(side="left")
+        tk.Radiobutton(unit_frame, text="cells", variable=unit_var, value="cells").pack(side="left")
+        tk.Radiobutton(unit_frame, text="meters", variable=unit_var, value="meters").pack(side="left")
+
+        # Symmetric checkbox
+        sym_cb = tk.Checkbutton(dialog, text="Symmetric", variable=symmetric_var)
+        sym_cb.grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=2)
+
+        # Symmetric sub-frame (single field)
+        sym_frame = tk.Frame(dialog)
+        sym_frame.grid(row=2, column=0, columnspan=4, padx=8, pady=2, sticky="w")
+        tk.Label(sym_frame, text="Size:").grid(row=0, column=0, sticky="e")
+        sym_var = tk.StringVar(value="0")
+        tk.Entry(sym_frame, textvariable=sym_var, width=8).grid(row=0, column=1, padx=4)
+
+        # Asymmetric sub-frame (N/S/W/E)
+        asym_frame = tk.Frame(dialog)
+        n_var = tk.StringVar(value="0")
+        s_var = tk.StringVar(value="0")
+        w_var = tk.StringVar(value="0")
+        e_var = tk.StringVar(value="0")
+        for i, (lbl, var) in enumerate([("North:", n_var), ("South:", s_var),
+                                         ("West:", w_var), ("East:", e_var)]):
+            tk.Label(asym_frame, text=lbl).grid(row=i // 2, column=(i % 2) * 2, sticky="e", padx=(4, 0))
+            tk.Entry(asym_frame, textvariable=var, width=8).grid(row=i // 2, column=(i % 2) * 2 + 1, padx=4, pady=2)
+
+        # Fill with active tool
+        tool_label = self._active_tool_label()
+        fill_with_tool_var = tk.BooleanVar(value=False)
+        fill_frame = tk.Frame(dialog)
+        fill_frame.grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 0))
+        fill_cb = tk.Checkbutton(fill_frame, text="Fill border with active tool",
+                                 variable=fill_with_tool_var,
+                                 state="normal" if tool_label else "disabled")
+        fill_cb.pack(side="left")
+        if tool_label:
+            tk.Label(fill_frame, text=f"({tool_label})", fg="gray").pack(side="left", padx=4)
+
+        # Preview label
+        preview_label = tk.Label(dialog, text="", justify="left", anchor="w")
+        preview_label.grid(row=4, column=0, columnspan=4, padx=8, pady=(4, 2), sticky="w")
+
+        def _parse_to_cells(v):
+            val = float(v.get())
+            if unit_var.get() == "meters":
+                val = val / res
+            return max(0, round(val))
+
+        def update_preview(*_):
+            try:
+                if symmetric_var.get():
+                    n = s = w = e = _parse_to_cells(sym_var)
+                else:
+                    n = _parse_to_cells(n_var)
+                    s = _parse_to_cells(s_var)
+                    w = _parse_to_cells(w_var)
+                    e = _parse_to_cells(e_var)
+            except (ValueError, ZeroDivisionError):
+                preview_label.config(text="—")
+                return
+            new_nx = self.nx + w + e
+            new_ny = self.ny + n + s
+            preview_label.config(
+                text=(f"Current: {self.nx} \u00d7 {self.ny} cells"
+                      f"  ({self.nx * res:.0f} \u00d7 {self.ny * res:.0f} m)\n"
+                      f"New:     {new_nx} \u00d7 {new_ny} cells"
+                      f"  ({new_nx * res:.0f} \u00d7 {new_ny * res:.0f} m)")
+            )
+
+        def on_unit_change(*_):
+            # Convert current field values to the new unit
+            factor = res if unit_var.get() == "meters" else (1.0 / res)
+            for var in (sym_var, n_var, s_var, w_var, e_var):
+                try:
+                    var.set(f"{float(var.get()) * factor:.4g}")
+                except ValueError:
+                    pass
+            update_preview()
+
+        def on_symmetric_toggle(*_):
+            if symmetric_var.get():
+                asym_frame.grid_remove()
+                sym_frame.grid(row=2, column=0, columnspan=4, padx=8, pady=2, sticky="w")
+            else:
+                sym_frame.grid_remove()
+                asym_frame.grid(row=2, column=0, columnspan=4, padx=8, pady=2, sticky="w")
+            update_preview()
+
+        unit_var.trace_add("write", on_unit_change)
+        symmetric_var.trace_add("write", on_symmetric_toggle)
+        for var in (sym_var, n_var, s_var, w_var, e_var):
+            var.trace_add("write", update_preview)
+
+        update_preview()
+
+        def on_ok():
+            try:
+                if symmetric_var.get():
+                    n = s = w = e = _parse_to_cells(sym_var)
+                else:
+                    n = _parse_to_cells(n_var)
+                    s = _parse_to_cells(s_var)
+                    w = _parse_to_cells(w_var)
+                    e = _parse_to_cells(e_var)
+            except ValueError:
+                tk.messagebox.showerror("Invalid Input", "Enter numeric values.", parent=dialog)
+                return
+            if any(v < 0 for v in (n, s, w, e)):
+                tk.messagebox.showerror("Invalid Input", "Values must be \u2265 0.", parent=dialog)
+                return
+            if n == s == w == e == 0:
+                dialog.destroy()
+                return
+            dialog.destroy()
+            new_model = self.model.padded(n, s, w, e)
+            if fill_with_tool_var.get() and tool_label:
+                pixel_data, water_temp = self._get_current_tool_pixel_data()
+                new_nx = new_model.nx
+                new_ny = new_model.ny
+                # North strip
+                for r in range(n):
+                    for c in range(new_nx):
+                        new_model.set_pixel(r, c, **pixel_data)
+                        if water_temp is not None:
+                            new_model.set_water_parameter(0, r, c, water_temp)
+                # South strip
+                for r in range(new_ny - s, new_ny):
+                    for c in range(new_nx):
+                        new_model.set_pixel(r, c, **pixel_data)
+                        if water_temp is not None:
+                            new_model.set_water_parameter(0, r, c, water_temp)
+                # West strip (excluding corners already covered above)
+                for r in range(n, new_ny - s):
+                    for c in range(w):
+                        new_model.set_pixel(r, c, **pixel_data)
+                        if water_temp is not None:
+                            new_model.set_water_parameter(0, r, c, water_temp)
+                # East strip (excluding corners already covered above)
+                for r in range(n, new_ny - s):
+                    for c in range(new_nx - e, new_nx):
+                        new_model.set_pixel(r, c, **pixel_data)
+                        if water_temp is not None:
+                            new_model.set_water_parameter(0, r, c, water_temp)
+            self._apply_grid_transform(new_model)
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.grid(row=5, column=0, columnspan=4, pady=8)
+        tk.Button(btn_frame, text="OK", command=on_ok, width=8).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=8).pack(side="left", padx=4)
+
+        dialog.wait_window()
+
+    def crop_grid(self):
+        """Open the Crop Grid dialog to reduce the domain to a sub-region."""
+        res = self.model.res
+        nx, ny = self.nx, self.ny
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Crop Grid")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        unit_var = tk.StringVar(value="cells")
+        mode_var = tk.StringVar(value="origin_size")  # "origin_size" | "two_corners"
+
+        # Unit radio buttons
+        unit_frame = tk.Frame(dialog)
+        unit_frame.grid(row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 2))
+        tk.Label(unit_frame, text="Unit:").pack(side="left")
+        tk.Radiobutton(unit_frame, text="cells", variable=unit_var, value="cells").pack(side="left")
+        tk.Radiobutton(unit_frame, text="meters", variable=unit_var, value="meters").pack(side="left")
+
+        # Mode radio buttons
+        mode_frame = tk.Frame(dialog)
+        mode_frame.grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=2)
+        tk.Label(mode_frame, text="Input mode:").pack(side="left")
+        tk.Radiobutton(mode_frame, text="Origin + Size", variable=mode_var, value="origin_size").pack(side="left")
+        tk.Radiobutton(mode_frame, text="Two corners", variable=mode_var, value="two_corners").pack(side="left")
+
+        # Origin + Size sub-frame
+        os_frame = tk.Frame(dialog)
+        x0_var  = tk.StringVar(value="0")
+        y0_var  = tk.StringVar(value="0")
+        snx_var = tk.StringVar(value=str(nx))
+        sny_var = tk.StringVar(value=str(ny))
+        for row_i, (lbl, var) in enumerate([("SW corner  x (W\u2192E):", x0_var),
+                                             ("SW corner  y (S\u2192N):", y0_var),
+                                             ("New width  nx:", snx_var),
+                                             ("New height ny:", sny_var)]):
+            tk.Label(os_frame, text=lbl).grid(row=row_i, column=0, sticky="e", padx=(8, 2), pady=2)
+            tk.Entry(os_frame, textvariable=var, width=10).grid(row=row_i, column=1, padx=(2, 8), pady=2)
+
+        # Two corners sub-frame
+        tc_frame = tk.Frame(dialog)
+        tx0_var = tk.StringVar(value="0")
+        ty0_var = tk.StringVar(value="0")
+        tx1_var = tk.StringVar(value=str(nx - 1))
+        ty1_var = tk.StringVar(value=str(ny - 1))
+        for row_i, (lbl, var) in enumerate([("SW corner  x0 (W\u2192E):", tx0_var),
+                                             ("SW corner  y0 (S\u2192N):", ty0_var),
+                                             ("NE corner  x1 (W\u2192E):", tx1_var),
+                                             ("NE corner  y1 (S\u2192N):", ty1_var)]):
+            tk.Label(tc_frame, text=lbl).grid(row=row_i, column=0, sticky="e", padx=(8, 2), pady=2)
+            tk.Entry(tc_frame, textvariable=var, width=10).grid(row=row_i, column=1, padx=(2, 8), pady=2)
+
+        os_frame.grid(row=2, column=0, columnspan=4, sticky="w")
+        # tc_frame is hidden initially
+
+        # Preview label
+        preview_label = tk.Label(dialog, text="", justify="left", anchor="w")
+        preview_label.grid(row=4, column=0, columnspan=4, padx=8, pady=(2, 2), sticky="w")
+
+        def _to_cells(v):
+            val = float(v.get())
+            return val / res if unit_var.get() == "meters" else val
+
+        def _get_crop_cells():
+            """Return (col_start, row_start, new_nx, new_ny) in integer cells."""
+            if mode_var.get() == "origin_size":
+                x0 = round(_to_cells(x0_var))
+                y0 = round(_to_cells(y0_var))
+                cnx = round(_to_cells(snx_var))
+                cny = round(_to_cells(sny_var))
+            else:
+                x0  = round(_to_cells(tx0_var))
+                y0  = round(_to_cells(ty0_var))
+                x1  = round(_to_cells(tx1_var))
+                y1  = round(_to_cells(ty1_var))
+                cnx = x1 - x0 + 1
+                cny = y1 - y0 + 1
+            col_start = x0
+            row_start = ny - y0 - cny   # PALM y-from-south → array row
+            return col_start, row_start, cnx, cny
+
+        def update_preview(*_):
+            try:
+                col_start, row_start, cnx, cny = _get_crop_cells()
+            except (ValueError, ZeroDivisionError):
+                preview_label.config(text="—")
+                return
+            preview_label.config(
+                text=(f"Current: {nx} \u00d7 {ny} cells"
+                      f"  ({nx * res:.0f} \u00d7 {ny * res:.0f} m)\n"
+                      f"New:     {cnx} \u00d7 {cny} cells"
+                      f"  ({cnx * res:.0f} \u00d7 {cny * res:.0f} m)")
+            )
+
+        def on_unit_change(*_):
+            factor = res if unit_var.get() == "meters" else (1.0 / res)
+            for var in (x0_var, y0_var, snx_var, sny_var,
+                        tx0_var, ty0_var, tx1_var, ty1_var):
+                try:
+                    var.set(f"{float(var.get()) * factor:.4g}")
+                except ValueError:
+                    pass
+            update_preview()
+
+        def on_mode_change(*_):
+            try:
+                if mode_var.get() == "two_corners":
+                    # Origin+size → two corners
+                    x0  = round(_to_cells(x0_var))
+                    y0  = round(_to_cells(y0_var))
+                    cnx = round(_to_cells(snx_var))
+                    cny = round(_to_cells(sny_var))
+                    x1  = x0 + cnx - 1
+                    y1  = y0 + cny - 1
+                    scale = res if unit_var.get() == "meters" else 1.0
+                    tx0_var.set(f"{x0 * scale:.4g}")
+                    ty0_var.set(f"{y0 * scale:.4g}")
+                    tx1_var.set(f"{x1 * scale:.4g}")
+                    ty1_var.set(f"{y1 * scale:.4g}")
+                    os_frame.grid_remove()
+                    tc_frame.grid(row=2, column=0, columnspan=4, sticky="w")
+                else:
+                    # Two corners → origin+size
+                    x0  = round(_to_cells(tx0_var))
+                    y0  = round(_to_cells(ty0_var))
+                    x1  = round(_to_cells(tx1_var))
+                    y1  = round(_to_cells(ty1_var))
+                    cnx = x1 - x0 + 1
+                    cny = y1 - y0 + 1
+                    scale = res if unit_var.get() == "meters" else 1.0
+                    x0_var.set(f"{x0 * scale:.4g}")
+                    y0_var.set(f"{y0 * scale:.4g}")
+                    snx_var.set(f"{cnx * scale:.4g}")
+                    sny_var.set(f"{cny * scale:.4g}")
+                    tc_frame.grid_remove()
+                    os_frame.grid(row=2, column=0, columnspan=4, sticky="w")
+            except (ValueError, ZeroDivisionError):
+                pass
+            update_preview()
+
+        unit_var.trace_add("write", on_unit_change)
+        mode_var.trace_add("write", on_mode_change)
+        for var in (x0_var, y0_var, snx_var, sny_var, tx0_var, ty0_var, tx1_var, ty1_var):
+            var.trace_add("write", update_preview)
+
+        update_preview()
+
+        # "Draw on canvas" button
+        def on_draw():
+            dialog.grab_release()   # release grab so the canvas can receive mouse events
+            dialog.withdraw()
+            self._crop_draw_mode = True
+            self.canvas.config(cursor="crosshair")
+
+            def _on_crop_drawn(r1, c1, r2, c2):
+                col_min = min(c1, c2)
+                col_max = max(c1, c2)
+                row_min = min(r1, r2)
+                row_max = max(r1, r2)
+                # Convert to PALM coords (y from south)
+                x0_palm = col_min
+                y0_palm = ny - 1 - row_max
+                cnx = col_max - col_min + 1
+                cny = row_max - row_min + 1
+                scale = res if unit_var.get() == "meters" else 1.0
+                if mode_var.get() == "origin_size":
+                    x0_var.set(f"{x0_palm * scale:.4g}")
+                    y0_var.set(f"{y0_palm * scale:.4g}")
+                    snx_var.set(f"{cnx * scale:.4g}")
+                    sny_var.set(f"{cny * scale:.4g}")
+                else:
+                    tx0_var.set(f"{x0_palm * scale:.4g}")
+                    ty0_var.set(f"{y0_palm * scale:.4g}")
+                    tx1_var.set(f"{(x0_palm + cnx - 1) * scale:.4g}")
+                    ty1_var.set(f"{(y0_palm + cny - 1) * scale:.4g}")
+                dialog.deiconify()
+                dialog.grab_set()   # re-establish grab when dialog returns
+
+            self._crop_draw_callback = _on_crop_drawn
+
+        draw_btn = tk.Button(dialog, text="Draw on canvas", command=on_draw)
+        draw_btn.grid(row=3, column=0, columnspan=4, pady=(4, 2))
+
+        def on_ok():
+            try:
+                col_start, row_start, cnx, cny = _get_crop_cells()
+            except ValueError:
+                tk.messagebox.showerror("Invalid Input", "Enter numeric values.", parent=dialog)
+                return
+            if cnx < 1 or cny < 1:
+                tk.messagebox.showerror("Invalid Input", "New size must be at least 1 \u00d7 1.", parent=dialog)
+                return
+            if col_start < 0 or row_start < 0:
+                tk.messagebox.showerror("Invalid Input", "Origin is outside the grid.", parent=dialog)
+                return
+            if col_start + cnx > nx or row_start + cny > ny:
+                tk.messagebox.showerror("Invalid Input", "Crop region exceeds grid bounds.", parent=dialog)
+                return
+            if cnx == nx and cny == ny and col_start == 0 and row_start == 0:
+                dialog.destroy()
+                return
+            dialog.destroy()
+            self._apply_grid_transform(self.model.cropped(col_start, row_start, cnx, cny))
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.grid(row=5, column=0, columnspan=4, pady=8)
+        tk.Button(btn_frame, text="OK", command=on_ok, width=8).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=8).pack(side="left", padx=4)
+
+        dialog.wait_window()
 
     def discretize_project_to_dz(self):
         """Apply the current dz-based discretization rules to the whole project."""
@@ -1826,18 +2516,32 @@ class PaintApplication(framework.Framework):
         self.canvas.xview_moveto(xview)
         self.canvas.yview_moveto(yview)
         
+    def _restore_model_from_state(self, state, xview, yview):
+        """Shared logic for undo/redo: restore model and redraw, handling dimension changes."""
+        self.model = gridmodel.GridModel.from_state(state)
+        self.backend.model = self.model
+        self._apply_editor_state_to_backend()
+        dims_changed = (self.model.nx != self.nx or self.model.ny != self.ny)
+        self.nx = self.model.nx
+        self.ny = self.model.ny
+        if dims_changed:
+            self.editor_state.clear_selection()
+            self.rescale_grid()
+            self.backend.draw_grid(self.nx, self.ny, self.res)
+            self.backend.set_grid_lines_visible(self.show_grid_lines)
+            self.refresh_project_info_labels()
+        else:
+            self.backend.update_grid(self.nx, self.ny, self.res)
+            self.backend.show_selection(self.editor_state.selection_cells)
+            self._restore_canvas_view(xview, yview)
+        self.dirty = True
+
     def undo(self, event=None):
         if self.undo_stack:
             xview, yview = self._capture_canvas_view()
             state = self.undo_stack.pop()
             self.redo_stack.append(self.model.export_state())
-            self.model = gridmodel.GridModel.from_state(state)
-            self.backend.model = self.model
-            self._apply_editor_state_to_backend()
-            self.backend.update_grid(self.nx, self.ny, self.res)
-            self.backend.show_selection(self.editor_state.selection_cells)
-            self._restore_canvas_view(xview, yview)
-            self.dirty = True
+            self._restore_model_from_state(state, xview, yview)
         else:
             print("Nothing to undo.")
 
@@ -1846,13 +2550,7 @@ class PaintApplication(framework.Framework):
             xview, yview = self._capture_canvas_view()
             state = self.redo_stack.pop()
             self.undo_stack.append(self.model.export_state())
-            self.model = gridmodel.GridModel.from_state(state)
-            self.backend.model = self.model
-            self._apply_editor_state_to_backend()
-            self.backend.update_grid(self.nx, self.ny, self.res)
-            self.backend.show_selection(self.editor_state.selection_cells)
-            self._restore_canvas_view(xview, yview)
-            self.dirty = True
+            self._restore_model_from_state(state, xview, yview)
         else:
             print("Nothing to redo.")
 
@@ -1897,9 +2595,8 @@ class PaintApplication(framework.Framework):
 
         self.building_id = 1
         self.building_height = self.original_dz
-        self.building_type = 2
-        
         self.surface_config = surface_config.SURFACE_CONFIG
+        self.building_type = gridmodel.GridModel.default_building_type(self.surface_config)
         self.selected_vegetation_category = "Grass & Crops"
         self.selected_vegetation_type = self.get_vegetation_categories()["Grass & Crops"]["default_type"]
         
@@ -1932,6 +2629,8 @@ class PaintApplication(framework.Framework):
 
         # Tree Generator dialog (optional visual tool)
         self._tree_gen_dialog = None               # lazy-created Toplevel singleton
+        self._sd_plot_dialog = None                # lazy-created analysis plots dialog
+        self._3d_view_thread = None                # daemon thread for PyVista window
 
         self.active_view = "landcover"
         self.selected_height_tool_bar_function = self.height_tool_bar_functions[0]
@@ -1950,8 +2649,16 @@ class PaintApplication(framework.Framework):
         
         self.active_cell = None
         self.hover_cell = None
-        self.draw_mode = "brush"       # "brush" | "rectangle" | "line"
+        self.draw_mode = "brush"       # "brush" | "rectangle" | "line" | "ellipse"
         self._shape_start_cell = None  # (row, col) set on press; None when idle
+        self._ctrl_held = False        # True while Ctrl is down during a shape drag
+        self._crop_draw_mode = False
+        self._crop_draw_start = None      # (row, col) on press
+        self._crop_draw_callback = None   # callable(r1, c1, r2, c2)
+        self._clipboard = None  # None | {offsets_orig, offsets, cells, bbox}
+        self._paste_mode = False
+        self._paste_angle = 0.0  # cumulative CW rotation in degrees
+        self._select_rect_start = None  # (row, col) for rectangle-lasso select
         
         super().__init__(root)
         self.rescale_grid()
@@ -1986,6 +2693,22 @@ class PaintApplication(framework.Framework):
         """Redraw all canvas pixels from the current model state."""
         self.backend.update_grid(nx, ny, res)
         self.backend.show_selection(self.editor_state.selection_cells)
+
+    def _apply_grid_transform(self, new_model):
+        """Swap in a resized model and fully redraw. Saves current state for undo."""
+        self.save_state()
+        self.model = new_model
+        self.nx = new_model.nx
+        self.ny = new_model.ny
+        self.editor_state.clear_selection()
+        self.backend.model = new_model
+        self.backend.clear()
+        self._apply_editor_state_to_backend()
+        self.rescale_grid()
+        self.backend.draw_grid(self.nx, self.ny, self.res)
+        self.backend.set_grid_lines_visible(self.show_grid_lines)
+        self.refresh_project_info_labels()
+        self.dirty = True
                 
                 
         
@@ -2329,8 +3052,19 @@ class PaintApplication(framework.Framework):
             self.backend.clear_hover_preview()
             return
 
+        if self._paste_mode:
+            preview = [(tr, tc) for tr, tc, _ in self._paste_target_cells(row, col)]
+            self.backend.show_hover_preview(preview if preview else [(row, col)])
+            return
+
         if self.selected_tool_bar_function == "select":
-            self.backend.show_hover_preview([(row, col)])
+            if self._select_rect_start is not None:
+                r1, c1 = self._select_rect_start
+                self.backend.show_hover_preview(
+                    list(self._get_rectangle_cells(r1, c1, row, col))
+                )
+            else:
+                self.backend.show_hover_preview([(row, col)])
             return
 
         if self.selected_tool_bar_function == "single_tree":
@@ -2352,7 +3086,8 @@ class PaintApplication(framework.Framework):
               and self.selected_tool_bar_function in _SHAPE_MODE_TOOLS
               and self._shape_start_cell is not None):
             r1, c1 = self._shape_start_cell
-            cells = self._get_shape_cells(r1, c1, row, col)
+            cells = self._get_shape_cells(r1, c1, row, col,
+                                          force_circle=self._ctrl_held)
             self.backend.show_hover_preview(cells if cells else [(row, col)])
         else:
             affected_pixels = self.get_pixels_in_brush(row, col)
@@ -2391,23 +3126,36 @@ class PaintApplication(framework.Framework):
         self.canvas.unbind("<Button-5>")
 
     def on_mouse_button_pressed(self, event):
+        self._ctrl_held = bool(event.state & 0x0004)
         row, col = self.set_active_cell_from_event(event)
         self.show_current_coordinates(row, col)
         self.show_meter_coordinates(row, col)
         self.show_cell_info(row, col)
         self.update_hover_preview(row, col)
 
+        if self._paste_mode:
+            if 0 <= row < self.ny and 0 <= col < self.nx:
+                self._commit_paste(row, col)
+            return
+
+        if self._crop_draw_mode:
+            self._crop_draw_start = (row, col)
+            return
+
         if self.selected_tool_bar_function == "select":
             if not (0 <= row < self.ny and 0 <= col < self.nx):
                 return
-            if event.state & 0x0004:
+            if event.state & 0x0004 and event.state & 0x0001:
+                # Ctrl+Shift: toggle individual cell
                 self.toggle_selection_cell(row, col)
-            elif event.state & 0x0001:
-                cells = set(self.editor_state.selection_cells)
-                cells.add((row, col))
-                self.set_selection(cells, anchor=(row, col), mode="add")
+            elif event.state & 0x0004:
+                # Ctrl: flood-fill contiguous area, add to existing selection
+                flood = self._flood_select(row, col)
+                cells = set(self.editor_state.selection_cells) | flood
+                self.set_selection(cells, anchor=(row, col), mode="replace")
             else:
-                self.set_selection([(row, col)], anchor=(row, col), mode="replace")
+                # Plain click or Shift+click: start rectangle drag
+                self._select_rect_start = (row, col)
             return
 
         if self.draw_mode != "brush" and self.selected_tool_bar_function in _SHAPE_MODE_TOOLS:
@@ -2417,13 +3165,26 @@ class PaintApplication(framework.Framework):
         self.execute_selected_method()
 
     def on_mouse_button_pressed_motion(self, event):
+        self._ctrl_held = bool(event.state & 0x0004)
         row, col = self.set_active_cell_from_event(event)
         self.show_current_coordinates(row, col)
         self.show_meter_coordinates(row, col)
         self.show_cell_info(row, col)
         self.update_hover_preview(row, col)
 
+        if self._crop_draw_mode:
+            if self._crop_draw_start:
+                r1, c1 = self._crop_draw_start
+                cells = list(self._get_rectangle_cells(r1, c1, row, col))
+                self.backend.show_hover_preview(cells)
+            return
+
         if self.selected_tool_bar_function == "select":
+            if self._select_rect_start is not None:
+                r1, c1 = self._select_rect_start
+                self.backend.show_hover_preview(
+                    list(self._get_rectangle_cells(r1, c1, row, col))
+                )
             return
 
         # Single-tree placement fires only on click, not on drag
@@ -2434,6 +3195,41 @@ class PaintApplication(framework.Framework):
                 self.execute_selected_method()
 
     def on_mouse_button_released(self, event):
+        if self._crop_draw_mode:
+            if self._crop_draw_start:
+                row, col = self.set_active_cell_from_event(event)
+                r1, c1 = self._crop_draw_start
+                self._crop_draw_start = None
+                self._crop_draw_mode = False
+                self.canvas.config(cursor="")
+                self.backend.clear_hover_preview()
+                if self._crop_draw_callback:
+                    cb = self._crop_draw_callback
+                    self._crop_draw_callback = None
+                    cb(r1, c1, row, col)
+            return
+
+        if self.selected_tool_bar_function == "select" and self._select_rect_start is not None:
+            row, col = self.set_active_cell_from_event(event)
+            r1, c1 = self._select_rect_start
+            self._select_rect_start = None
+            self.backend.clear_hover_preview()
+            shift = bool(event.state & 0x0001)
+            if r1 == row and c1 == col:
+                # Zero-size drag: plain single-cell select
+                if shift:
+                    existing = set(self.editor_state.selection_cells)
+                    existing.add((row, col))
+                    self.set_selection(existing, anchor=(row, col), mode="add")
+                else:
+                    self.set_selection([(row, col)], anchor=(row, col), mode="replace")
+            else:
+                lasso = self._lasso_select(r1, c1, row, col)
+                if shift:
+                    lasso |= set(self.editor_state.selection_cells)
+                self.set_selection(lasso, anchor=(r1, c1), mode="replace")
+            return
+
         if self.draw_mode == "brush" or self.selected_tool_bar_function not in _SHAPE_MODE_TOOLS:
             self._shape_start_cell = None
             return
@@ -2442,7 +3238,9 @@ class PaintApplication(framework.Framework):
         row, col = self.set_active_cell_from_event(event)
         r1, c1 = self._shape_start_cell
         self._shape_start_cell = None
-        cells = self._get_shape_cells(r1, c1, row, col)
+        force_circle = self._ctrl_held
+        self._ctrl_held = False
+        cells = self._get_shape_cells(r1, c1, row, col, force_circle=force_circle)
         if not cells:
             return
         self.save_state()
@@ -2583,6 +3381,7 @@ class PaintApplication(framework.Framework):
             'Load from NetCDF//self.load_project_netcdf, sep, Exit//self.exit_application',
             'View- Landcover View//self.set_landcover_view, Heightmap View//self.set_heightmap_view, Soil View//self.set_soil_view, sep, Zoom in/Ctrl+ Up Arrow/self.canvas_zoom_in,Zoom Out/Ctrl+Down Arrow/self.canvas_zoom_out, Toggle Gridlines/Ctrl+G/self.toggle_gridlines, Toggle Tree Overlay/Ctrl+T/self.toggle_tree_overlay',
             'Edit - Undo/Ctrl + z/self.undo, Redo/Ctrl + y/self.redo, Bucket Fill//self.bucket_fill',
+            'Grid - Add Border//self.add_border, Crop//self.crop_grid',
             'Extras - Autosave Settings//self.open_autosave_settings, Generate Report//self.generate_report, Change Origin//self.change_origin, Discretize Project to dz//self.discretize_project_to_dz',
         )
         self.build_menu(menu_definitions)
@@ -2638,6 +3437,9 @@ class PaintApplication(framework.Framework):
         extras_menu.add_command(label="Validate", command=self.run_validation)
         extras_menu.add_command(label="Clean Static Driver", command=self.clean_static_driver)
         extras_menu.add_command(label="Filter Sweep", command=self.run_filter_sweep_tool)
+        extras_menu.add_separator()
+        extras_menu.add_command(label="Analysis Plots", command=self._open_sd_plot_dialog)
+        extras_menu.add_command(label="3D View", command=self._open_3d_view)
         self._validate_before_save_var = tk.BooleanVar(value=True)
         extras_menu.add_checkbutton(
             label="Validate before Save",
@@ -2681,6 +3483,11 @@ class PaintApplication(framework.Framework):
         self.root.bind("<Control-y>", self.redo)
         self.root.bind("<Control-g>", self.toggle_gridlines)
         self.root.bind("<Control-t>", self.toggle_tree_overlay)
+        self.root.bind("<Control-c>", lambda e: self._copy_selection(cut=False))
+        self.root.bind("<Control-x>", lambda e: self._copy_selection(cut=True))
+        self.root.bind("<Control-v>", lambda e: self._enter_paste_mode())
+        self.root.bind("<r>", self._on_r_key)
+        self.root.bind("<Escape>", self._on_escape_key)
 
     def toggle_tree_overlay(self, event=None):
         """Toggle visibility of the tree crown overlay on the canvas."""
@@ -2943,9 +3750,9 @@ class PaintApplication(framework.Framework):
         
     def building_options(self):
         """Display options for the building tool."""
-        initial_id = tk.IntVar(value=1)  # initial value
+        initial_id = tk.IntVar(value=int(self.building_id))
         initial_height = tk.DoubleVar(value=float(self.building_height))
-        initial_type = tk.IntVar(value=2)
+        initial_type = tk.StringVar()
 
         tk.Label(self.top_bar, text='building_id:').pack(side="left", padx=5, )
         self.building_id_spinbox = tk.Spinbox(
@@ -2964,18 +3771,32 @@ class PaintApplication(framework.Framework):
         )
         self.building_height_spinbox.pack(side="left")
         tk.Label(self.top_bar, text='building_type:').pack(side="left", padx=5)
-        self.building_type_spinbox = tk.Spinbox(
-            self.top_bar, from_=1, to=6, width=3, textvariable=initial_type, command=self.update_building_attributes)
-        self.building_type_spinbox.pack(side="left")
+        self.building_type_var = initial_type
+        self.building_type_combobox = ttk.Combobox(
+            self.top_bar,
+            textvariable=self.building_type_var,
+            state="readonly",
+            width=28,
+            values=[
+                f"{building_type} - {definition['label']}"
+                for building_type, definition in sorted(self.get_building_types().items())
+            ],
+        )
+        self.building_type_combobox.pack(side="left", padx=5)
+        current_definition = self.get_building_definition(self.building_type)
+        self.building_type_var.set(
+            f"{self.building_type} - {current_definition.get('label', self.building_type)}"
+        )
+        self.building_type_combobox.bind("<<ComboboxSelected>>", self.update_building_attributes)
         self._append_draw_mode_buttons()
 
     def eraser_options(self):
         self._append_draw_mode_buttons()
 
     def _append_draw_mode_buttons(self):
-        """Append Brush / Rectangle / Line mode toggle to the top-bar."""
+        """Append Brush / Rectangle / Line / Ellipse mode toggle to the top-bar."""
         tk.Label(self.top_bar, text="Mode:").pack(side="left", padx=(15, 2))
-        for mode, label in (("brush", "Brush"), ("rectangle", "Rectangle"), ("line", "Line")):
+        for mode, label in (("brush", "Brush"), ("rectangle", "Rectangle"), ("line", "Line"), ("ellipse", "Ellipse")):
             btn = tk.Button(
                 self.top_bar,
                 text=label,
@@ -2990,7 +3811,7 @@ class PaintApplication(framework.Framework):
         self.remove_options_from_top_bar()
         self.display_options_in_the_top_bar()
 
-    def update_building_attributes(self):
+    def update_building_attributes(self, event=None):
         """
         Update the current building attributes based on spinbox values.
         """
@@ -3008,7 +3829,22 @@ class PaintApplication(framework.Framework):
         self.building_height = float(quantized_height)
         if hasattr(self, "building_height_var"):
             self.building_height_var.set(self.building_height)
-        self.building_type = int(self.building_type_spinbox.get())
+        default_building_type = gridmodel.GridModel.default_building_type(self.surface_config)
+        configured_building_types = set(int(v) for v in self.get_building_types().keys())
+        selection = getattr(self, "building_type_var", None)
+        selection_text = "" if selection is None else selection.get()
+        try:
+            selected_building_type = int(str(selection_text).split(" - ")[0])
+        except (TypeError, ValueError, AttributeError):
+            selected_building_type = default_building_type
+        if selected_building_type not in configured_building_types:
+            selected_building_type = default_building_type
+        self.building_type = selected_building_type
+        if hasattr(self, "building_type_var"):
+            definition = self.get_building_definition(self.building_type)
+            self.building_type_var.set(
+                f"{self.building_type} - {definition.get('label', self.building_type)}"
+            )
 
     def _parse_int_or_none(self, value):
         value = str(value).strip()
@@ -3126,7 +3962,7 @@ class PaintApplication(framework.Framework):
         if summary["count"] == 0:
             tk.Label(
                 self.top_bar,
-                text="Click to select, Shift-click adds, Ctrl-click toggles.",
+                text="Click: select  |  Shift: add cell  |  Ctrl: flood-fill  |  Ctrl+Shift: toggle  |  Ctrl+C: copy  |  Ctrl+X: cut  |  Ctrl+V: paste",
             ).pack(side="left", padx=10)
             return
 

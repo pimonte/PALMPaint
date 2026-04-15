@@ -77,6 +77,41 @@ def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np
 
     return np.full((npars, ny, nx), fill_value, dtype=dtype)
 
+
+def get_4d_data(nc_file, var_name, shape, fill_value=-9999.0, dtype=np.float32, storage_factory=None):
+    """Load a 4D variable or return a filled fallback array."""
+    if var_name not in nc_file.variables:
+        if storage_factory is None:
+            return np.full(shape, fill_value, dtype=dtype)
+        data = storage_factory(shape, dtype, fill_value, var_name)
+        data[...] = fill_value
+        return data
+
+    var = nc_file.variables[var_name]
+    if len(var.shape) != 4 or tuple(int(v) for v in var.shape) != tuple(int(v) for v in shape):
+        if storage_factory is None:
+            return np.full(shape, fill_value, dtype=dtype)
+        data = storage_factory(shape, dtype, fill_value, var_name)
+        data[...] = fill_value
+        return data
+
+    target_dtype = np.dtype(dtype)
+    fv = getattr(var, "_FillValue", fill_value)
+    if storage_factory is None:
+        data = var[:]
+        if hasattr(data, "filled"):
+            data = data.filled(fv)
+        return data.astype(target_dtype, copy=False)
+
+    data = storage_factory(shape, target_dtype, fill_value, var_name)
+    for idx0 in range(shape[0]):
+        for idx1 in range(shape[1]):
+            layer = var[idx0, idx1, :, :]
+            if hasattr(layer, "filled"):
+                layer = layer.filled(fv)
+            data[idx0, idx1, :, :] = np.asarray(layer, dtype=target_dtype)
+    return data
+
 def LoadModel(filename="output.nc", surface_config=None):
     """
     Load grid data from a NetCDF file directly into a GridModel.
@@ -193,6 +228,27 @@ def LoadModel(filename="output.nc", surface_config=None):
             dtype=np.int32,
             storage_factory=_storage_factory,
         )
+        for name, dim_names in GridModel.BUILDING_PARAMETER_SPECS:
+            target = model.building_pars[name]
+            if len(dim_names) == 1:
+                target[...] = get_pars_data(
+                    nc_file,
+                    name,
+                    target.shape[0],
+                    ny,
+                    nx,
+                    fill_value=GridModel.FLOAT_FILL,
+                    dtype=np.float32,
+                )
+            else:
+                target[...] = get_4d_data(
+                    nc_file,
+                    name,
+                    target.shape,
+                    fill_value=GridModel.FLOAT_FILL,
+                    dtype=np.float32,
+                    storage_factory=None,
+                )
 
         resolved_vegetation = {
             "zlad": zlad,

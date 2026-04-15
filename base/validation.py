@@ -152,6 +152,7 @@ def clean_model(model):
         "water_pars_cleared_outside_water": 0,
         "soil_filled_from_surface_config": 0,
         "building_ids_auto_assigned": 0,
+        "building_parameters_cleared_outside_buildings": 0,
     }
 
     invalid_zt_mask = (
@@ -216,6 +217,17 @@ def clean_model(model):
     orphan_wp_mask = water_pars_set & ~(model.water_type > model.INT_FILL)
     summary["water_pars_cleared_outside_water"] = int(np.count_nonzero(orphan_wp_mask))
     model.water_pars[:, orphan_wp_mask] = model.FLOAT_FILL
+
+    building_param_masks = []
+    for name, _dim_names in getattr(model, "BUILDING_PARAMETER_SPECS", ()):
+        arr = model.building_pars[name]
+        active = np.any(arr > model.FLOAT_FILL, axis=tuple(range(arr.ndim - 2)))
+        building_param_masks.append(active)
+    if building_param_masks:
+        building_params_set = np.logical_or.reduce(building_param_masks)
+        orphan_building_param_mask = building_params_set & ~has_building
+        summary["building_parameters_cleared_outside_buildings"] = int(np.count_nonzero(orphan_building_param_mask))
+        model.clear_building_parameters_where(orphan_building_param_mask)
 
     has_veg = model.vegetation_type > model.INT_FILL
     has_pav = model.pavement_type > model.INT_FILL

@@ -60,8 +60,9 @@ class Framework():
                 menu_label = menu_label.replace('&', '', 1)
             except ValueError:
                 underline = None
+            _, attr_name = command_callback.split('.', 1)
             menu.add_command(label=menu_label, underline=underline,
-                             accelerator=accelrator_key, command=eval(command_callback))
+                             accelerator=accelrator_key, command=getattr(self, attr_name))
 
 
 class TestThisFramework(Framework):

@@ -23,17 +23,17 @@ SURFACE_CONFIG = {
             1: {
                 "label": "bare soil",
                 "soil_type": 1,
-                "display": {"color": "brown"},
+                "display": {"color": "#8c564b"},
             },
             2: {
                 "label": "crops, mixed farming",
                 "soil_type": 2,
-                "display": {"color": "yellowgreen"},
+                "display": {"color": "#8c8931"},
             },
             3: {
                 "label": "short grass",
                 "soil_type": 3,
-                "display": {"color": "green"},
+                "display": {"color": "#348C31"},
             },
             4: {
                 "label": "evergreen needleleaf trees",
@@ -58,7 +58,7 @@ SURFACE_CONFIG = {
             8: {
                 "label": "tall grass",
                 "soil_type": 3,
-                "display": {"color": "lawngreen"},
+                "display": {"color": "#2D7A2A"},
             },
             9: {
                 "label": "desert",
@@ -103,7 +103,7 @@ SURFACE_CONFIG = {
             17: {
                 "label": "mixed forest/woodland",
                 "soil_type": 3,
-                "display": {"color": "green4"},
+                "display": {"color": "#008b00"},
             },
             18: {
                 "label": "interrupted forest",
@@ -204,7 +204,7 @@ SURFACE_CONFIG = {
             },
             9: {"label": "Gravel", 
                 "soil_type": 3,
-                "display": {"color": "tan"}
+                "display": {"color": "#706047"}
             },
             10: {"label": "Fine gravel", 
                  "soil_type": 3,
@@ -232,7 +232,6 @@ SURFACE_CONFIG = {
             },
         },
     },
-
    "water": {
         "categories": {
             "Natural water": {

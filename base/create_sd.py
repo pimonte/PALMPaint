@@ -9,6 +9,7 @@ import netCDF4 as nc
 from netCDF4 import Dataset
 import numpy as np
 
+from base.building_config import BUILDING_CONFIG
 from base.geo_reference import (
     add_grid_mapping,
     coordinate_attribute_names,
@@ -55,6 +56,23 @@ def _write_3d_variable(var, data, *, transform=None, block_rows=32):
             var[iz, start:end, :] = block
 
 
+def _write_4d_variable(var, data, *, transform=None, block_rows=16):
+    """Write a 4-D array in leading-dimension/z/y blocks."""
+    for i0 in range(data.shape[0]):
+        for i1 in range(data.shape[1]):
+            layer = data[i0, i1]
+            for start, end in _row_blocks(layer.shape[0], block_rows=block_rows):
+                block = layer[start:end]
+                if transform is not None:
+                    block = transform(block)
+                var[i0, i1, start:end, :] = block
+
+
+def _has_non_fill_values(data, fill_value):
+    arr = np.asarray(data)
+    return bool(np.any(np.isfinite(arr) & (arr > float(fill_value))))
+
+
 def _building_3d_iter(building_id_data, building_height_data, z_data, *, block_rows=64):
     """Yield buildings_3d slices without materializing the full 3-D volume."""
     footprint_mask = (building_id_data > 0) & (building_height_data > GridModel.FLOAT_FILL)
@@ -97,6 +115,7 @@ def SaveModel(
         building_type_data = model.building_type
         height_data = model.zt
         water_pars_data = model.water_pars
+        building_parameter_data = model.building_pars
 
         source_buildings_3d = None if resolved_vegetation is None else resolved_vegetation.get("source_buildings_3d")
         source_buildings_3d_z = None if resolved_vegetation is None else resolved_vegetation.get("source_buildings_3d_z")
@@ -165,6 +184,19 @@ def SaveModel(
 
             if np.any(custom_water_mask):
                 nc_file.createDimension('nwater_pars', 7)
+
+            active_building_param_specs = [
+                (name, dim_names)
+                for name, dim_names in GridModel.BUILDING_PARAMETER_SPECS
+                if _has_non_fill_values(building_parameter_data[name], GridModel.FLOAT_FILL)
+            ]
+            needed_building_dims = {
+                dim_name
+                for _name, dim_names in active_building_param_specs
+                for dim_name in dim_names
+            }
+            for dim_name in sorted(needed_building_dims):
+                nc_file.createDimension(dim_name, BUILDING_CONFIG["parameter_dimensions"][dim_name])
 
             x = nc_file.createVariable('x', 'f4', ('x',))
             x.long_name = 'distance to origin in x-direction'
@@ -307,6 +339,18 @@ def SaveModel(
                     block = np.full((7, end - start, nx), -9999.0, dtype=np.float32)
                     block[0, :, :][block_mask] = np.asarray(water_pars_data[0, start:end, :], dtype=np.float32)[block_mask]
                     nc_water_pars[:, start:end, :] = block
+
+            for name, dim_names in active_building_param_specs:
+                dims = tuple(dim_names) + ("y", "x")
+                variable = nc_file.createVariable(name, "f4", dims, fill_value=-9999.0)
+                meta = BUILDING_CONFIG["parameter_metadata"].get(name, {})
+                variable.long_name = meta.get("long_name", name.replace("_", " "))
+                variable.units = meta.get("units", "")
+                add_grid_mapping(variable, coordinates_attr)
+                if len(dim_names) == 1:
+                    _write_3d_variable(variable, building_parameter_data[name])
+                else:
+                    _write_4d_variable(variable, building_parameter_data[name])
 
             nc_file.title = 'Idealized Scenario'
             nc_file.author = 'PALM User'

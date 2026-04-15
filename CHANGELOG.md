@@ -8,6 +8,30 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.4-alpha] — dev branch (unreleased)
+
+### Added
+- **`base/building_config.py`**: building type catalogue (6 types with per-type hex colors and category grouping) plus full PALM USM parameter spec (12 arrays: `building_albedo_type`, `building_emissivity`, `building_fraction`, `building_general_pars`, `building_heat_capacity`, `building_heat_conductivity`, `building_indoor_pars`, `building_lai`, `building_roughness_length`, `building_roughness_length_qh`, `building_thickness`, `building_transmissivity`)
+- **Per-type building colors**: `get_color()` and the vectorized `_color_array_rgb()` path now render each building type in its configured color instead of uniform black
+- **`GridModel.building_pars`**: dict of 12 USM parameter arrays allocated at construction; included in `export_state()` / `from_state()`; cleared by `clear_building_parameters()` / `clear_building_parameters_where()` when building data is erased
+- **`GridModel.padded(n_north, n_south, n_west, n_east)`**: returns a new model with fill-value border cells added on each side; tree instance positions adjusted
+- **`GridModel.cropped(col_start, row_start, new_nx, new_ny)`**: returns a new model sliced to a sub-domain; tree instances outside the window are dropped
+- **Clipboard operations** (`palmpaint.py`): copy, cut, paste with `_copy_selection()` / `_commit_paste()`; paste mode supports **R** / **Shift-R** for ±15°/1° CW rotation with live hover preview; **Escape** cancels
+- **`_flood_select()`**: BFS flood-fill selection of all contiguous cells matching the seed cell's surface kind and type (landcover, heightmap, and soil views)
+- **`_lasso_select()`**: rectangle-lasso that finds the dominant surface key inside the drag box and flood-fills its full contiguous extent across the whole grid
+- **Ellipse draw mode** (`_get_ellipse_cells()`): filled axis-aligned ellipse inscribed in the drag bounding box; `force_circle` flag; integrated into `_get_shape_cells()` as a third draw mode alongside rectangle and line
+- **`base/sd_plot.py`** (`SDPlotDialog`): embedded matplotlib analysis dialog with 12 plot types (XY landcover/pavement/vegetation/LAD/terrain/soil/building type and height, cross-section, height histogram, LAD profile, plan area fractions); optional — disabled gracefully without matplotlib
+- **`base/threedview.py`**: PyVista 3D view launched in a daemon thread; PALM→PyVista coordinate convention; face tags in mesh cell data; optional — disabled gracefully without pyvista
+- `_write_4d_variable()` in `create_sd.py`: streaming 4D NetCDF write (leading-dim / z / y blocks) for multi-dimensional building parameter arrays; only written when non-fill values are present (`_has_non_fill_values()`)
+- `get_4d_data()` in `load_sd.py`: 4D variable loader with shape validation and optional `storage_factory`
+
+### Changed
+- `base/framework.py`: replaced `eval(command_callback)` with `getattr(self, attr_name)` — removes arbitrary code execution risk from menu configuration
+- `base/surface_config.py`: vegetation and pavement display colors converted from Tk named colors (`"green"`, `"lawngreen"`, `"tan"`, etc.) to explicit hex codes for cross-platform consistency
+- `base/palm_preflight.py`: removed `DEFAULT_BUILDING_TYPE` constant; `apply_topography_filters()` now accepts `default_building_type` parameter; `preview_filter_sweep()` resolves the value from `building_config`
+- `clean_model()` in `validation.py`: clears building parameters at cells outside building footprints; count reported as `building_parameters_cleared_outside_buildings`
+
+---
 ## [0.5.3-alpha] — dev branch (unreleased)
 
 ### Added
