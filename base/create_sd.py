@@ -233,21 +233,27 @@ def SaveModel(
                 add_grid_mapping(nc_soil_type, coordinates_attr)
                 _write_2d_variable(nc_soil_type, soil_data)
 
-            if np.any(vegetation_data > GridModel.INT_FILL):
+            write_surface_types = np.any(
+                (vegetation_data > GridModel.INT_FILL)
+                | (pavement_data > GridModel.INT_FILL)
+                | (water_data > GridModel.INT_FILL)
+            )
+
+            if write_surface_types:
                 nc_vegetation_type = nc_file.createVariable('vegetation_type', 'i1', ('y', 'x'), fill_value=-127)
                 nc_vegetation_type.long_name = "vegetation type classification"
                 nc_vegetation_type.units = "1"
                 add_grid_mapping(nc_vegetation_type, coordinates_attr)
                 _write_2d_variable(nc_vegetation_type, vegetation_data)
 
-            if np.any(pavement_data > GridModel.INT_FILL):
+            if write_surface_types:
                 nc_pavement_type = nc_file.createVariable('pavement_type', 'i1', ('y', 'x'), fill_value=-127)
                 nc_pavement_type.long_name = "pavement type classification"
                 nc_pavement_type.units = "1"
                 add_grid_mapping(nc_pavement_type, coordinates_attr)
                 _write_2d_variable(nc_pavement_type, pavement_data)
 
-            if np.any(water_data > GridModel.INT_FILL):
+            if write_surface_types:
                 nc_water_type = nc_file.createVariable('water_type', 'i1', ('y', 'x'), fill_value=-127)
                 nc_water_type.long_name = "water type classification"
                 nc_water_type.units = "1"

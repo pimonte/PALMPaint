@@ -22,6 +22,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Ellipse draw mode** (`_get_ellipse_cells()`): filled axis-aligned ellipse inscribed in the drag bounding box; `force_circle` flag; integrated into `_get_shape_cells()` as a third draw mode alongside rectangle and line
 - **`base/sd_plot.py`** (`SDPlotDialog`): embedded matplotlib analysis dialog with 12 plot types (XY landcover/pavement/vegetation/LAD/terrain/soil/building type and height, cross-section, height histogram, LAD profile, plan area fractions); optional — disabled gracefully without matplotlib
 - **`base/threedview.py`**: PyVista 3D view launched in a daemon thread; PALM→PyVista coordinate convention; face tags in mesh cell data; optional — disabled gracefully without pyvista
+- **`startup_path` CLI argument** in `palmpaint.py`: optional positional argument; when supplied, skips the welcome screen and loads the given `.nc` file directly (e.g. `python3 palmpaint.py my_project.nc`)
 - `_write_4d_variable()` in `create_sd.py`: streaming 4D NetCDF write (leading-dim / z / y blocks) for multi-dimensional building parameter arrays; only written when non-fill values are present (`_has_non_fill_values()`)
 - `get_4d_data()` in `load_sd.py`: 4D variable loader with shape validation and optional `storage_factory`
 
@@ -30,6 +31,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - `base/surface_config.py`: vegetation and pavement display colors converted from Tk named colors (`"green"`, `"lawngreen"`, `"tan"`, etc.) to explicit hex codes for cross-platform consistency
 - `base/palm_preflight.py`: removed `DEFAULT_BUILDING_TYPE` constant; `apply_topography_filters()` now accepts `default_building_type` parameter; `preview_filter_sweep()` resolves the value from `building_config`
 - `clean_model()` in `validation.py`: clears building parameters at cells outside building footprints; count reported as `building_parameters_cleared_outside_buildings`
+- `base/create_sd.py`: NetCDF export now writes `vegetation_type`, `pavement_type`, and `water_type` as a set whenever any of the three surface layers is present, leaving unset layers at fill values
 
 ---
 ## [0.5.3-alpha] — dev branch (unreleased)

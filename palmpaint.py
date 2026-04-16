@@ -37,6 +37,7 @@ import base.tkbackend as tkbackend
 
 _arg_parser = argparse.ArgumentParser(add_help=False)
 _arg_parser.add_argument("--backend", choices=["pil", "tk"], default=None)
+_arg_parser.add_argument("startup_path", nargs="?", default=None)
 _cli_args, _ = _arg_parser.parse_known_args()
 
 if _cli_args.backend == "tk":
@@ -4421,22 +4422,31 @@ class PaintApplication(framework.Framework):
         
         
 if __name__ == '__main__':
-    # Ask the user what should happen at startup
-    # - create new project with custom dimensions
-    # - load existing project from NetCDF file
     root = tk.Tk()
     root.withdraw()
-    welcome_result = welcome_screen.get_welcome_input(root)
-    root.deiconify()
-    root.title("PALMPaint")
-    if welcome_result[0] == "load":
-        _, file_path = welcome_result
+
+    if _cli_args.startup_path:
+        file_path = _cli_args.startup_path
+        root.deiconify()
+        root.title("PALMPaint")
         print(f"Loading project from {file_path}")
-        # For loading, we initialize with dummy dimensions and resolution 
-        # these will be replaced when the file is loaded.
         app = PaintApplication(root, 16, 16, 4)
         app.load_project_netcdf_from_path(file_path)
     else:
-        _, nx, ny, res, dz = welcome_result
-        app = PaintApplication(root, nx, ny, res, dz)
+        # Ask the user what should happen at startup
+        # - create new project with custom dimensions
+        # - load existing project from NetCDF file
+        welcome_result = welcome_screen.get_welcome_input(root)
+        root.deiconify()
+        root.title("PALMPaint")
+        if welcome_result[0] == "load":
+            _, file_path = welcome_result
+            print(f"Loading project from {file_path}")
+            # For loading, we initialize with dummy dimensions and resolution
+            # these will be replaced when the file is loaded.
+            app = PaintApplication(root, 16, 16, 4)
+            app.load_project_netcdf_from_path(file_path)
+        else:
+            _, nx, ny, res, dz = welcome_result
+            app = PaintApplication(root, nx, ny, res, dz)
     root.mainloop()
