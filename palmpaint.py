@@ -66,7 +66,7 @@ import base.welcome_screen as welcome_screen
 
 
 # Surface tools that support rectangle / line draw modes.
-_SHAPE_MODE_TOOLS = frozenset({"vegetation", "pavement", "water", "building", "eraser"})
+_SHAPE_MODE_TOOLS = frozenset({"vegetation", "pavement", "water", "building", "eraser", "irrigation", "shf", "ssws"})
 
 
 class PaintApplication(framework.Framework):
@@ -76,7 +76,7 @@ class PaintApplication(framework.Framework):
     
 
     tool_bar_functions = (
-        "vegetation", "pavement", "water", "building", "eraser", "single_tree", "select")
+        "vegetation", "pavement", "water", "building", "eraser", "single_tree", "select", "irrigation", "shf", "ssws")
     height_tool_bar_functions = ("zt_set", "zt_raise", "zt_lower")
     soil_tool_bar_functions = ()
     selected_tool_bar_function = tool_bar_functions[0]
@@ -241,6 +241,12 @@ class PaintApplication(framework.Framework):
                 and self.model.water_type[row, col] <= self.model.INT_FILL
                 and not self._cell_has_building(row, col)
             )
+        if layer_name == "irrigation":
+            return self.model.irrigation_flag[row, col] > self.model.INT_FILL
+        if layer_name == "shf":
+            return self.model.shf[row, col] > self.model.FLOAT_FILL
+        if layer_name == "ssws":
+            return self.model.ssws[row, col] > self.model.FLOAT_FILL
         return False
 
     def _is_paint_locked_at(self, row, col):
@@ -541,6 +547,7 @@ class PaintApplication(framework.Framework):
             "soil_type": self._common_value([int(pixel["soil_type"]) for pixel in pixels]),
             "vegetation_type": self._common_value([int(pixel["vegetation_type"]) for pixel in pixels]),
             "pavement_type": self._common_value([int(pixel["pavement_type"]) for pixel in pixels]),
+            "street_type": self._common_value([int(pixel["street_type"]) for pixel in pixels]),
             "water_type": self._common_value([int(pixel["water_type"]) for pixel in pixels]),
             "water_temperature": self._common_value([float(pixel["water_temperature"]) for pixel in pixels]),
             "building_id": self._common_value([int(pixel["building_id"]) for pixel in pixels]),
@@ -613,6 +620,9 @@ class PaintApplication(framework.Framework):
             pavement_type = int(self.model.pavement_type[row, col])
             if pavement_type > self.model.INT_FILL:
                 choices.insert(0, ("Same pavement type", "pavement_type"))
+            street_type = int(self.model.street_type[row, col])
+            if street_type > self.model.INT_FILL:
+                choices.append(("Same street type", "street_type"))
         elif kind == "bare":
             soil_type = int(self.model.soil_type[row, col])
             if soil_type > self.model.INT_FILL:
@@ -689,6 +699,15 @@ class PaintApplication(framework.Framework):
                     for c in range(self.nx)
                     if int(self.model.pavement_type[r, c]) == target
                 ]
+        elif criterion == "street_type":
+            target = int(self.model.street_type[row, col])
+            if target > self.model.INT_FILL:
+                selected = [
+                    (r, c)
+                    for r in range(self.ny)
+                    for c in range(self.nx)
+                    if int(self.model.street_type[r, c]) == target
+                ]
         elif criterion == "soil_type":
             target = int(self.model.soil_type[row, col])
             if target > self.model.INT_FILL:
@@ -732,14 +751,17 @@ class PaintApplication(framework.Framework):
 
         clean_fields = {}
         water_temperature = None
+        street_type = None
         for key, value in fields.items():
             if value is None:
                 continue
             if key == "water_temperature":
                 water_temperature = float(value)
+            elif key == "street_type":
+                street_type = int(value)
             else:
                 clean_fields[key] = value
-        if not clean_fields and water_temperature is None:
+        if not clean_fields and water_temperature is None and street_type is None:
             return
 
         self.save_state()
@@ -751,6 +773,8 @@ class PaintApplication(framework.Framework):
                 self.update_pixel(row, col, **clean_fields)
             if water_temperature is not None:
                 self.model.set_water_parameter(0, row, col, water_temperature)
+            if street_type is not None:
+                self.model.street_type[row, col] = street_type
             affected.append((row, col))
 
         if affected:
@@ -953,6 +977,13 @@ class PaintApplication(framework.Framework):
             return f"Building (h={self.building_height} m)"
         if tool == "eraser":
             return "Eraser (default fill)"
+        if tool == "irrigation":
+            label = "Irrigated" if self.selected_irrigation_flag == 1 else "Not irrigated"
+            return f"Irrigation: {label}"
+        if tool == "shf":
+            return f"SHF: {self.selected_shf_value:.4f} K m s⁻¹"
+        if tool == "ssws":
+            return f"SSWS: {self.selected_ssws_value:.4e} kg m⁻² s⁻¹"
         return None   # tool does not produce a surface fill
 
     def _get_current_tool_pixel_data(self):
@@ -1000,6 +1031,19 @@ class PaintApplication(framework.Framework):
             or self.model.building_height[row, col] > self.model.FLOAT_FILL
         )
 
+    def _cell_is_default_surface(self, row, col):
+        """Return True if the cell has no LSM surface type assigned.
+
+        shf is only meaningful on default-type surfaces: cells without
+        vegetation_type, pavement_type, water_type, or a building footprint.
+        """
+        return (
+            self.model.vegetation_type[row, col] <= self.model.INT_FILL
+            and self.model.pavement_type[row, col] <= self.model.INT_FILL
+            and self.model.water_type[row, col] <= self.model.INT_FILL
+            #and not self._cell_has_building(row, col)
+        )
+
     def _cell_has_tree_data(self, row, col):
         return self.model.has_lad_at(row, col)
             
@@ -1031,10 +1075,50 @@ class PaintApplication(framework.Framework):
                 self.model.set_water_parameter(0, r, c, water_temp)
             else:
                 self.model.clear_water_parameters(r, c)
+            self.model.clear_street_type(r, c)
+            self.model.clear_shf(r, c)
+            self.model.clear_ssws(r, c)
         self.backend.update_pixels(affected)
 
     def _paint_shape_cells(self, cells):
         """Paint *cells* using the current tool's pixel payload. Respects layer locks."""
+        if self.selected_tool_bar_function == "irrigation":
+            affected = [
+                (r, c) for r, c in cells
+                if not self._is_paint_locked_at(r, c)
+            ]
+            for r, c in affected:
+                self.model.set_pixel(r, c, irrigation_flag=self.selected_irrigation_flag)
+            if affected:
+                self.backend.update_grid(self.nx, self.ny, self.res)
+            return
+
+        if self.selected_tool_bar_function == "shf":
+            self._update_shf_value()
+            affected = [
+                (r, c) for r, c in cells
+                if not self._is_paint_locked_at(r, c)
+                and self._cell_is_default_surface(r, c)
+            ]
+            for r, c in affected:
+                self.model.shf[r, c] = self.selected_shf_value
+            if affected:
+                self.backend.update_grid(self.nx, self.ny, self.res)
+            return
+
+        if self.selected_tool_bar_function == "ssws":
+            self._update_ssws_value()
+            affected = [
+                (r, c) for r, c in cells
+                if not self._is_paint_locked_at(r, c)
+                and self._cell_is_default_surface(r, c)
+            ]
+            for r, c in affected:
+                self.model.ssws[r, c] = self.selected_ssws_value
+            if affected:
+                self.backend.update_grid(self.nx, self.ny, self.res)
+            return
+
         pixel_data, water_temp = self._get_current_tool_pixel_data()
         affected = []
         for r, c in cells:
@@ -1045,6 +1129,9 @@ class PaintApplication(framework.Framework):
                 self.model.set_water_parameter(0, r, c, water_temp)
             else:
                 self.model.clear_water_parameters(r, c)
+            self.model.clear_street_type(r, c)
+            self.model.clear_shf(r, c)
+            self.model.clear_ssws(r, c)
             affected.append((r, c))
         if affected:
             self.backend.update_grid(self.nx, self.ny, self.res)
@@ -1076,6 +1163,62 @@ class PaintApplication(framework.Framework):
             building_height=self.building_height,
             building_type=self.building_type,
         ))
+
+    def irrigation(self):
+        """Apply irrigation_flag to the current brush area without touching surface layers."""
+        row, col = self.active_cell
+        affected = [
+            (r, c)
+            for r, c in self.get_pixels_in_brush(row, col)
+            if (r, c) in self.pixels
+        ]
+        for r, c in affected:
+            self.model.set_pixel(r, c, irrigation_flag=self.selected_irrigation_flag)
+        self.backend.update_pixels(affected)
+
+    def shf(self):
+        """Apply SHF to the current brush area (default-type surfaces only)."""
+        self._update_shf_value()
+        row, col = self.active_cell
+        affected = [
+            (r, c)
+            for r, c in self.get_pixels_in_brush(row, col)
+            if (r, c) in self.pixels
+            and not self._is_paint_locked_at(r, c)
+            and self._cell_is_default_surface(r, c)
+        ]
+        for r, c in affected:
+            self.model.shf[r, c] = self.selected_shf_value
+        self.backend.update_pixels(affected)
+
+    def _update_shf_value(self, event=None):
+        """Read the SHF float entry and update selected_shf_value."""
+        try:
+            self.selected_shf_value = float(self.shf_value_var.get())
+        except (ValueError, AttributeError):
+            pass
+
+    def ssws(self):
+        """Apply SSWS to the current brush area (default-type surfaces only)."""
+        self._update_ssws_value()
+        row, col = self.active_cell
+        affected = [
+            (r, c)
+            for r, c in self.get_pixels_in_brush(row, col)
+            if (r, c) in self.pixels
+            and not self._is_paint_locked_at(r, c)
+            and self._cell_is_default_surface(r, c)
+        ]
+        for r, c in affected:
+            self.model.ssws[r, c] = self.selected_ssws_value
+        self.backend.update_pixels(affected)
+
+    def _update_ssws_value(self, event=None):
+        """Read the SSWS float entry and update selected_ssws_value."""
+        try:
+            self.selected_ssws_value = float(self.ssws_value_var.get())
+        except (ValueError, AttributeError):
+            pass
 
     def eraser(self):
         """Reset the current brush area to fill values."""
@@ -1489,6 +1632,9 @@ class PaintApplication(framework.Framework):
                     continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
+                self.model.clear_street_type(row, col)
+                self.model.clear_shf(row, col)
+                self.model.clear_ssws(row, col)
         elif self.selected_tool_bar_function == "pavement":
             pavement_type = self.selected_pavement_type
             pav_def = self.get_pavement_definition(pavement_type)
@@ -1501,6 +1647,9 @@ class PaintApplication(framework.Framework):
                     continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
+                self.model.clear_street_type(row, col)
+                self.model.clear_shf(row, col)
+                self.model.clear_ssws(row, col)
         elif self.selected_tool_bar_function == "water":
             self.update_water_temperature()
             pixel_data = {**reset, "water_type": self.selected_water_type}
@@ -1511,6 +1660,9 @@ class PaintApplication(framework.Framework):
                     continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.set_water_parameter(0, row, col, self.selected_water_temperature)
+                self.model.clear_street_type(row, col)
+                self.model.clear_shf(row, col)
+                self.model.clear_ssws(row, col)
         elif self.selected_tool_bar_function == "building":
             pixel_data = {**reset,
                           "building_id": self.building_id,
@@ -1521,12 +1673,18 @@ class PaintApplication(framework.Framework):
                     continue
                 self.update_pixel(row, col, **pixel_data)
                 self.model.clear_water_parameters(row, col)
+                self.model.clear_street_type(row, col)
+                self.model.clear_shf(row, col)
+                self.model.clear_ssws(row, col)
         elif self.selected_tool_bar_function == "eraser":
             for (row, col) in self.pixels.keys():
                 if self._is_paint_locked_at(row, col):
                     continue
                 self.update_pixel(row, col, **reset)
                 self.model.clear_water_parameters(row, col)
+                self.model.clear_street_type(row, col)
+                self.model.clear_shf(row, col)
+                self.model.clear_ssws(row, col)
         self.backend.update_grid(self.nx, self.ny, self.res)
         
 
@@ -2608,6 +2766,10 @@ class PaintApplication(framework.Framework):
         self.selected_water_type = self.get_water_categories()["Natural water"]["default_type"]
         self.selected_water_temperature = self.get_water_definition(self.selected_water_type)["water_temperature"]
 
+        self.selected_irrigation_flag = 1
+        self.selected_shf_value  = 0.0
+        self.selected_ssws_value = 0.0
+
         self.selected_soil_type = self.surface_config["soil"]["default_type"]
         self.soil_tool_bar_functions = tuple(
             [f"soil_{soil_id}" for soil_id in sorted(self.get_soil_types().keys())]
@@ -2957,6 +3119,10 @@ class PaintApplication(framework.Framework):
             elif summary["surface_kind"] == "pavement":
                 ptype = summary["common"].get("pavement_type")
                 lines.append(f"pavement type: {ptype}" if ptype is not None else "pavement type: mixed")
+                stype = summary["common"].get("street_type")
+                if stype is not None and stype > self.model.INT_FILL:
+                    st_label = self.surface_config["pavement"].get("street_types", {}).get(stype, str(stype))
+                    lines.append(f"street type: {stype} ({st_label})")
             return "\n".join(lines)
 
         if not (0 <= row < self.ny and 0 <= col < self.nx):
@@ -2973,6 +3139,7 @@ class PaintApplication(framework.Framework):
         building_height = float(pixel["building_height"])
         building_type = int(pixel["building_type"])
         water_temperature = float(pixel["water_temperature"])
+        street_type_val = int(pixel["street_type"])
 
         lines = ["Cell info", f"zt: {zt:.2f} m"]
 
@@ -2999,6 +3166,9 @@ class PaintApplication(framework.Framework):
         elif pavement_type > self.model.INT_FILL:
             pavement_text = self._format_type_label(pavement_type, self.get_pavement_definition)
             lines.append(f"surface: pavement {pavement_text}")
+            if street_type_val > self.model.INT_FILL:
+                st_label = self.surface_config["pavement"].get("street_types", {}).get(street_type_val, str(street_type_val))
+                lines.append(f"street type: {street_type_val} ({st_label})")
 
         elif vegetation_type > self.model.INT_FILL:
             vegetation_text = self._format_type_label(vegetation_type, self.get_vegetation_definition)
@@ -3012,6 +3182,20 @@ class PaintApplication(framework.Framework):
             lines.append(f"soil: {soil_text}")
         else:
             lines.append("soil: -")
+
+        irr = int(pixel["irrigation_flag"])
+        if irr == 1:
+            lines.append("irrigation: yes")
+        elif irr == 0:
+            lines.append("irrigation: no")
+
+        shf_val = float(pixel.get("shf", self.model.FLOAT_FILL))
+        if shf_val > self.model.FLOAT_FILL:
+            lines.append(f"shf: {shf_val:.4f} K m s⁻¹")
+
+        ssws_val = float(pixel.get("ssws", self.model.FLOAT_FILL))
+        if ssws_val > self.model.FLOAT_FILL:
+            lines.append(f"ssws: {ssws_val:.4e} kg m⁻² s⁻¹")
 
         # Tree / resolved-vegetation info
         tree_info = self.model.get_tree_info_at(row, col)
@@ -3791,6 +3975,44 @@ class PaintApplication(framework.Framework):
         self.building_type_combobox.bind("<<ComboboxSelected>>", self.update_building_attributes)
         self._append_draw_mode_buttons()
 
+    def irrigation_options(self):
+        """Display irrigation flag selector in the top bar."""
+        tk.Label(self.top_bar, text="Flag:").pack(side="left", padx=5)
+        self.irrigation_flag_var = tk.StringVar()
+        values = ["1 - Irrigated", "0 - Not irrigated"]
+        cb = ttk.Combobox(self.top_bar, textvariable=self.irrigation_flag_var,
+                          values=values, state="readonly", width=18)
+        cb.pack(side="left", padx=5)
+        current = f"{self.selected_irrigation_flag} - {'Irrigated' if self.selected_irrigation_flag == 1 else 'Not irrigated'}"
+        self.irrigation_flag_var.set(current)
+        cb.bind("<<ComboboxSelected>>", self._on_irrigation_flag_selected)
+        self._append_draw_mode_buttons()
+
+    def _on_irrigation_flag_selected(self, _event=None):
+        self.selected_irrigation_flag = int(self.irrigation_flag_var.get().split(" - ")[0])
+
+    def shf_options(self):
+        """Display SHF value entry in the top bar (K m s⁻¹ or W m⁻²)."""
+        tk.Label(self.top_bar, text="SHF (K m s⁻¹):").pack(side="left", padx=5)
+        self.shf_value_var = tk.StringVar(value=str(self.selected_shf_value))
+        entry = tk.Entry(self.top_bar, textvariable=self.shf_value_var, width=10)
+        entry.pack(side="left", padx=5)
+        entry.bind("<FocusOut>", self._update_shf_value)
+        entry.bind("<Return>", self._update_shf_value)
+        tk.Label(self.top_bar, text="(default-type surfaces only)", foreground="gray").pack(side="left", padx=5)
+        self._append_draw_mode_buttons()
+
+    def ssws_options(self):
+        """Display SSWS value entry in the top bar (kg m⁻² s⁻¹)."""
+        tk.Label(self.top_bar, text="SSWS (kg m⁻² s⁻¹):").pack(side="left", padx=5)
+        self.ssws_value_var = tk.StringVar(value=str(self.selected_ssws_value))
+        entry = tk.Entry(self.top_bar, textvariable=self.ssws_value_var, width=10)
+        entry.pack(side="left", padx=5)
+        entry.bind("<FocusOut>", self._update_ssws_value)
+        entry.bind("<Return>", self._update_ssws_value)
+        tk.Label(self.top_bar, text="(default-type surfaces only)", foreground="gray").pack(side="left", padx=5)
+        self._append_draw_mode_buttons()
+
     def eraser_options(self):
         self._append_draw_mode_buttons()
 
@@ -3910,6 +4132,9 @@ class PaintApplication(framework.Framework):
                 value = self._parse_int_or_none(self._selection_pavement_type_var.get())
                 if value is not None:
                     fields["pavement_type"] = value
+                value = self._parse_int_or_none(self._selection_street_type_var.get())
+                if value is not None:
+                    fields["street_type"] = value
 
             self.apply_selection_edits(**fields)
         except ValueError:
@@ -4022,6 +4247,11 @@ class PaintApplication(framework.Framework):
             )
             tk.Label(self.top_bar, text="pavement type:").pack(side="left", padx=(10, 2))
             tk.Entry(self.top_bar, textvariable=self._selection_pavement_type_var, width=5).pack(side="left", padx=2)
+            self._selection_street_type_var = tk.StringVar(
+                value=self._selection_common_display(common.get("street_type"))
+            )
+            tk.Label(self.top_bar, text="street type:").pack(side="left", padx=(8, 2))
+            tk.Entry(self.top_bar, textvariable=self._selection_street_type_var, width=5).pack(side="left", padx=2)
 
         tk.Button(
             self.top_bar,

@@ -115,6 +115,10 @@ def SaveModel(
         building_type_data = model.building_type
         height_data = model.zt
         water_pars_data = model.water_pars
+        street_type_data = model.street_type
+        irrigation_flag_data = model.irrigation_flag
+        shf_data  = model.shf
+        ssws_data = model.ssws
         building_parameter_data = model.building_pars
 
         source_buildings_3d = None if resolved_vegetation is None else resolved_vegetation.get("source_buildings_3d")
@@ -253,6 +257,13 @@ def SaveModel(
                 add_grid_mapping(nc_pavement_type, coordinates_attr)
                 _write_2d_variable(nc_pavement_type, pavement_data)
 
+            if write_surface_types and np.any(street_type_data > GridModel.INT_FILL):
+                nc_street_type = nc_file.createVariable('street_type', 'i1', ('y', 'x'), fill_value=-127)
+                nc_street_type.long_name = "street type classification"
+                nc_street_type.units = "1"
+                add_grid_mapping(nc_street_type, coordinates_attr)
+                _write_2d_variable(nc_street_type, street_type_data)
+
             if write_surface_types:
                 nc_water_type = nc_file.createVariable('water_type', 'i1', ('y', 'x'), fill_value=-127)
                 nc_water_type.long_name = "water type classification"
@@ -331,6 +342,27 @@ def SaveModel(
                     nc_tree_id.units = ""
                     add_grid_mapping(nc_tree_id, coordinates_attr)
                     _write_3d_variable(nc_tree_id, tree_id_data)
+
+            if np.any(irrigation_flag_data > GridModel.INT_FILL):
+                nc_irr = nc_file.createVariable('irrigation_flag', 'i1', ('y', 'x'), fill_value=-127)
+                nc_irr.long_name = "irrigation flag"
+                nc_irr.units = "1"
+                add_grid_mapping(nc_irr, coordinates_attr)
+                nc_irr[:, :] = irrigation_flag_data
+
+            if _has_non_fill_values(shf_data, GridModel.FLOAT_FILL):
+                nc_shf = nc_file.createVariable('shf', 'f4', ('y', 'x'), fill_value=-9999.0)
+                nc_shf.long_name = "surface sensible heat flux"
+                nc_shf.units = "K m s-1"
+                add_grid_mapping(nc_shf, coordinates_attr)
+                _write_2d_variable(nc_shf, shf_data)
+
+            if _has_non_fill_values(ssws_data, GridModel.FLOAT_FILL):
+                nc_ssws = nc_file.createVariable('ssws', 'f4', ('y', 'x'), fill_value=-9999.0)
+                nc_ssws.long_name = "surface passive scalar flux"
+                nc_ssws.units = "kg m-2 s-1"
+                add_grid_mapping(nc_ssws, coordinates_attr)
+                _write_2d_variable(nc_ssws, ssws_data)
 
             if np.any(custom_water_mask):
                 nc_water_pars = nc_file.createVariable('water_pars', 'f4', ('nwater_pars', 'y', 'x'), fill_value=-9999.0)

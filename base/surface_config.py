@@ -169,38 +169,60 @@ SURFACE_CONFIG = {
 
         "default_type": 1,
 
+        "street_types": {
+            1: "unclassified",
+            2: "cycleway",
+            3: "footway / pedestrian",
+            4: "path",
+            5: "track",
+            6: "living street",
+            7: "service",
+            8: "residential",
+            9: "tertiary",
+            10: "tertiary link",
+            11: "secondary",
+            12: "secondary link",
+            13: "primary",
+            14: "primary link",
+            15: "trunk",
+            16: "trunk link",
+            17: "motorway",
+            18: "motorway link",
+            19: "raceway",
+        },
+
         "types": {
             1: {"label": "Asphalt/concrete mix",
                 "soil_type": 3, 
-                "display": {"color": "gray"}
+                "display": {"color": "#696969"}
             },
             2: {"label": "Asphalt (asphalt concrete)",
                 "soil_type": 3, 
-                "display": {"color": "dimgray"}
+                "display": {"color": "#808080"}
             },
             3: {"label": "Concrete (Portland concrete)", 
                 "soil_type": 3,
-                "display": {"color": "lightgray"}
+                "display": {"color": "#d3d3d3"}
             },
             4: {"label": "Sett", 
                 "soil_type": 3,
-                "display": {"color": "slategray"}
+                "display": {"color": "#708090"}
             },
             5: {"label": "Paving stones", 
                 "soil_type": 3,
-                "display": {"color": "darkgray"}
+                "display": {"color": "#a9a9a9"}
             },
             6: {"label": "Cobblestone", 
                 "soil_type": 3,
-                "display": {"color": "gainsboro"}
+                "display": {"color": "#dcdcdc"}
             },
             7: {"label": "Metal", 
                 "soil_type": 3,
-                "display": {"color": "silver"}
+                "display": {"color": "#c0c0c0"}
             },
             8: {"label": "Wood", 
                 "soil_type": 3,
-                "display": {"color": "saddlebrown"}
+                "display": {"color": "#8b4513"}
             },
             9: {"label": "Gravel", 
                 "soil_type": 3,
@@ -208,27 +230,27 @@ SURFACE_CONFIG = {
             },
             10: {"label": "Fine gravel", 
                  "soil_type": 3,
-                 "display": {"color": "burlywood"}
+                 "display": {"color": "#deb887"}
             },
             11: {"label": "Pebblestone", 
                  "soil_type": 3,
-                 "display": {"color": "linen"}
+                 "display": {"color": "#f5f5dc"}
             },
             12: {"label": "Woodchips", 
                  "soil_type": 3,
-                 "display": {"color": "peru"}
+                 "display": {"color": "#cd853f"}
             },
             13: {"label": "Tartan (sports)", 
                  "soil_type": 3,
-                 "display": {"color": "firebrick"}
+                 "display": {"color": "#b22222"}
             },
             14: {"label": "Artificial turf (sports)", 
                  "soil_type": 3,
-                 "display": {"color": "limegreen"}
+                 "display": {"color": "#32cd32"}
             },
             15: {"label": "Clay (sports)", 
                  "soil_type": 3,
-                 "display": {"color": "chocolate"}
+                 "display": {"color": "#d2691e"}
             },
         },
     },

@@ -8,6 +8,21 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.5-alpha] — dev branch (unreleased)
+
+### Added
+- **`shf` brush** — surface sensible heat flux (`NC_FLOAT`, units `K m s-1`, `_FillValue=-9999.0`): new paint tool restricted to default-type surfaces (cells where none of `vegetation_type`, `pavement_type`, `water_type`; value entered in the top-bar entry field; cleared automatically when any LSM surface type is painted over the cell
+- **`ssws` brush** — surface passive scalar flux (`NC_FLOAT`, units `kg m-2 s-1`, `_FillValue=-9999.0`): same restriction and clear-on-overwrite behaviour as `shf`
+- Both fields included in NetCDF I/O (`SaveModel` / `LoadModel`), `GridModel` state snapshots (`export_state` / `from_state`), `padded()` / `cropped()`, and undo/redo
+- Both fields exposed as View menu layers (Show / Lock) via `LAYER_KEYS`; `shf` renders with an orange canvas overlay (255, 140, 0) and `ssws` with a purple overlay (200, 0, 200) — both using the existing 65 %/35 % blend
+- **`street_types` catalog** added to `base/surface_config.py`: 19 OSM-aligned pavement sub-categories (`unclassified` → `motorway link`, `raceway`) for display and future tool use
+- **`_cell_is_default_surface(row, col)`** helper in `palmpaint.py`: returns `True` only when all LSMtype fields are at fill value and no building footprint exists; used as the paint guard for `shf` and `ssws`
+- **`irrigation` brush** — added Flag for future blue infrastructure module.
+
+### Changed
+- Remaining pavement type display colors in `base/surface_config.py` converted from CSS named colors (`"gray"`, `"dimgray"`, `"slategray"`, etc.) to explicit hex codes for cross-platform consistency (continues the pattern established in 0.5.4-alpha for vegetation and early pavement entries)
+
+---
 ## [0.5.4-alpha] — dev branch (unreleased)
 
 ### Added

@@ -8,7 +8,7 @@ visibility, paint locks, and view-specific display options.
 from dataclasses import dataclass, field
 
 
-LAYER_KEYS = ("vegetation", "pavement", "water", "building")
+LAYER_KEYS = ("vegetation", "pavement", "water", "building", "irrigation", "shf", "ssws")
 
 
 @dataclass

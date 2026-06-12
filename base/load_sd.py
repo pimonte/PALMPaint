@@ -153,7 +153,11 @@ def LoadModel(filename="output.nc", surface_config=None):
         veg = get_2d_data(nc_file, "vegetation_type", ny, nx, fill_value=-127, dtype=np.int8)
         soil = get_2d_data(nc_file, "soil_type", ny, nx, fill_value=-127, dtype=np.int8)
         pav = get_2d_data(nc_file, "pavement_type", ny, nx, fill_value=-127, dtype=np.int8)
+        street_type = get_2d_data(nc_file, "street_type", ny, nx, fill_value=-127, dtype=np.int8)
         water = get_2d_data(nc_file, "water_type", ny, nx, fill_value=-127, dtype=np.int8)
+        irr = get_2d_data(nc_file, "irrigation_flag", ny, nx, fill_value=-127, dtype=np.int8)
+        shf  = get_2d_data(nc_file, "shf",  ny, nx, fill_value=-9999.0, dtype=np.float32)
+        ssws = get_2d_data(nc_file, "ssws", ny, nx, fill_value=-9999.0, dtype=np.float32)
         bldg_id = get_2d_data(
             nc_file, "building_id", ny, nx, fill_value=GridModel.BUILDING_ID_FILL, dtype=np.int32
         )
@@ -186,12 +190,16 @@ def LoadModel(filename="output.nc", surface_config=None):
         model.vegetation_type[:, :] = veg
         model.soil_type[:, :] = soil
         model.pavement_type[:, :] = pav
+        model.street_type[:, :] = street_type
         model.water_type[:, :] = water
         model.building_id[:, :] = bldg_id
         model.building_height[:, :] = bldg_height
         model.building_type[:, :] = bldg_type
         model.zt[:, :] = zt
         model.water_pars[:, :, :] = water_pars
+        model.irrigation_flag[:, :] = irr
+        model.shf[:, :]  = shf
+        model.ssws[:, :] = ssws
 
         def _storage_factory(shape, dtype, _fill_value, name_prefix):
             return model.allocate_storage(shape, dtype, fill_value=0, name_prefix=name_prefix)

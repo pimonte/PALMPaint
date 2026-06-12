@@ -317,10 +317,15 @@ class GridModel:
         self.vegetation_type = np.full((ny, nx), _veg_default,  dtype=np.int8)
         self.soil_type       = np.full((ny, nx), _soil_default, dtype=np.int8)
         self.pavement_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
+        self.street_type     = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.water_type      = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.building_id     = np.full((ny, nx), self.INT_FILL,  dtype=np.int32)
         self.building_height = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
         self.building_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
+
+        self.irrigation_flag = np.full((ny, nx), self.INT_FILL, dtype=np.int8)
+        self.shf  = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
+        self.ssws = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
 
         self.water_pars = np.full((7, ny, nx), self.FLOAT_FILL, dtype=np.float32)
         self.building_pars = {}
@@ -448,11 +453,15 @@ class GridModel:
             "vegetation_type": np.array(self.vegetation_type, copy=True),
             "soil_type": np.array(self.soil_type, copy=True),
             "pavement_type": np.array(self.pavement_type, copy=True),
+            "street_type": np.array(self.street_type, copy=True),
             "water_type": np.array(self.water_type, copy=True),
             "building_id": np.array(self.building_id, copy=True),
             "building_height": np.array(self.building_height, copy=True),
             "building_type": np.array(self.building_type, copy=True),
             "water_pars": np.array(self.water_pars, copy=True),
+            "irrigation_flag": np.array(self.irrigation_flag, copy=True),
+            "shf":  np.array(self.shf,  copy=True),
+            "ssws": np.array(self.ssws, copy=True),
             "building_pars": {
                 name: np.array(arr, copy=True)
                 for name, arr in self.building_pars.items()
@@ -477,11 +486,20 @@ class GridModel:
         model.vegetation_type[:, :] = state["vegetation_type"]
         model.soil_type[:, :] = state["soil_type"]
         model.pavement_type[:, :] = state["pavement_type"]
+        model.street_type[:, :] = state.get(
+            "street_type", np.full((model.ny, model.nx), cls.INT_FILL, dtype=np.int8)
+        )
         model.water_type[:, :] = state["water_type"]
         model.building_id[:, :] = state["building_id"]
         model.building_height[:, :] = state["building_height"]
         model.building_type[:, :] = state["building_type"]
         model.water_pars[:, :, :] = state["water_pars"]
+        if "irrigation_flag" in state:
+            model.irrigation_flag[:, :] = state["irrigation_flag"]
+        if "shf" in state:
+            model.shf[:, :] = state["shf"]
+        if "ssws" in state:
+            model.ssws[:, :] = state["ssws"]
         building_pars_state = state.get("building_pars", {})
         for name, _dim_names in cls.BUILDING_PARAMETER_SPECS:
             if name in building_pars_state:
@@ -532,11 +550,14 @@ class GridModel:
         new.vegetation_type[r, c] = self.vegetation_type
         new.soil_type[r, c]       = self.soil_type
         new.pavement_type[r, c]   = self.pavement_type
+        new.street_type[r, c]     = self.street_type
         new.water_type[r, c]      = self.water_type
         new.building_id[r, c]     = self.building_id
         new.building_height[r, c] = self.building_height
         new.building_type[r, c]   = self.building_type
         new.water_pars[:, r, c]   = self.water_pars
+        new.shf[r, c]             = self.shf
+        new.ssws[r, c]            = self.ssws
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
             new.building_pars[name][(..., r, c)] = self.building_pars[name]
         if self.resolved_vegetation["lad"] is not None:
@@ -568,11 +589,14 @@ class GridModel:
         new.vegetation_type[:, :] = self.vegetation_type[r, c]
         new.soil_type[:, :]       = self.soil_type[r, c]
         new.pavement_type[:, :]   = self.pavement_type[r, c]
+        new.street_type[:, :]     = self.street_type[r, c]
         new.water_type[:, :]      = self.water_type[r, c]
         new.building_id[:, :]     = self.building_id[r, c]
         new.building_height[:, :] = self.building_height[r, c]
         new.building_type[:, :]   = self.building_type[r, c]
         new.water_pars[:, :, :]   = self.water_pars[:, r, c]
+        new.shf[:, :]             = self.shf[r, c]
+        new.ssws[:, :]            = self.ssws[r, c]
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
             new.building_pars[name][...] = self.building_pars[name][(..., r, c)]
         if self.resolved_vegetation["lad"] is not None:
@@ -591,9 +615,21 @@ class GridModel:
         new.next_tree_id = self.next_tree_id
         return new
 
+    def clear_street_type(self, row, col):
+        """Reset street_type for one pixel."""
+        self.street_type[row, col] = self.INT_FILL
+
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
         self.water_pars[:, row, col] = self.FLOAT_FILL
+
+    def clear_shf(self, row, col):
+        """Reset shf for one pixel."""
+        self.shf[row, col] = self.FLOAT_FILL
+
+    def clear_ssws(self, row, col):
+        """Reset ssws for one pixel."""
+        self.ssws[row, col] = self.FLOAT_FILL
 
     def clear_building_parameters(self, row, col):
         """Reset all advanced building parameters for one pixel."""
@@ -977,6 +1013,9 @@ class GridModel:
             "building_id":     self.building_id,
             "building_height": self.building_height,
             "building_type":   self.building_type,
+            "irrigation_flag": self.irrigation_flag,
+            "shf":             self.shf,
+            "ssws":            self.ssws,
         }
         building_keys = {"building_id", "building_height", "building_type"}
         if any(key in kwargs for key in building_keys):
@@ -1017,6 +1056,8 @@ class GridModel:
                             layer_map[key][row, col] = 0.0
                 else:
                     layer_map[key][row, col] = value
+            elif key == "street_type":
+                self.street_type[row, col] = int(value)
             elif key == "water_temperature":
                 self.water_pars[0, row, col] = value
 
@@ -1118,12 +1159,16 @@ class GridModel:
             "vegetation_type": int(self.vegetation_type[row, col]),
             "soil_type":       int(self.soil_type[row, col]),
             "pavement_type":   int(self.pavement_type[row, col]),
+            "street_type":     int(self.street_type[row, col]),
             "water_type":      int(self.water_type[row, col]),
             "building_id":     int(self.building_id[row, col]),
             "building_height": float(self.building_height[row, col]),
             "building_type":   int(self.building_type[row, col]),
-            
+
             "water_temperature": float(self.water_pars[0, row, col]),
+            "irrigation_flag": int(self.irrigation_flag[row, col]),
+            "shf":  float(self.shf[row, col]),
+            "ssws": float(self.ssws[row, col]),
         }
 
     def get_height_range(self):
@@ -1259,47 +1304,60 @@ class GridModel:
         }
 
         if "water" in visible_layers and self.water_type[row, col] > self.INT_FILL:
-            return self.get_water_color(row, col)
-        # Robust building detection for legacy files with wrapped building_id values.
-        if (
+            base = self.get_water_color(row, col)
+        elif (
             "building" in visible_layers
             and (
                 self.building_id[row, col] > self.INT_FILL
                 or self.building_height[row, col] > 0.0
             )
         ):
-            return self.get_building_color(row, col)
-        if "pavement" in visible_layers and self.pavement_type[row, col] > self.INT_FILL:
+            base = self.get_building_color(row, col)
+        elif "pavement" in visible_layers and self.pavement_type[row, col] > self.INT_FILL:
             pav_type = int(self.pavement_type[row, col])
-            
             pavement_section = self.surface_config.get("pavement", {})
             pavement_types = pavement_section.get("types", {})
             pavement_def = pavement_types.get(pav_type, {})
             display = pavement_def.get("display", {})
-            color = display.get("color")
-            if color:
-                return color
-        if "vegetation" in visible_layers and self.vegetation_type[row, col] > self.INT_FILL:
+            base = display.get("color", "white")
+        elif "vegetation" in visible_layers and self.vegetation_type[row, col] > self.INT_FILL:
             veg_type = int(self.vegetation_type[row, col])
-            
             vegetation_section = self.surface_config.get("vegetation", {})
             vegetation_types = vegetation_section.get("types", {})
             vegetation_def = vegetation_types.get(veg_type, {})
             display = vegetation_def.get("display", {})
-            color = display.get("color")
-            if color:
-                return color
-
-        if show_height_background:
-            return self.get_height_grayscale_color(
-                row,
-                col,
-                z_min=height_bg_min,
-                z_max=height_bg_max,
+            base = display.get("color", "white")
+        elif show_height_background:
+            base = self.get_height_grayscale_color(
+                row, col, z_min=height_bg_min, z_max=height_bg_max,
             )
-        if show_soil_background:
-            return self.get_soil_color(row, col)
-        return "white"  # all layers are fill — bare / erased cell
+        elif show_soil_background:
+            base = self.get_soil_color(row, col)
+        else:
+            base = "white"
+
+        if "irrigation" in visible_layers and self.irrigation_flag[row, col] == 1:
+            br, bg, bb = self._hex_to_rgb(base)
+            base = "#{:02x}{:02x}{:02x}".format(
+                int(br * 0.65),
+                int(bg * 0.65 + 170 * 0.35),
+                int(bb * 0.65 + 255 * 0.35),
+            )
+        if "shf" in visible_layers and self.shf[row, col] > self.FLOAT_FILL:
+            br, bg, bb = self._hex_to_rgb(base)
+            base = "#{:02x}{:02x}{:02x}".format(
+                min(255, int(br * 0.65 + 255 * 0.35)),
+                min(255, int(bg * 0.65 + 140 * 0.35)),
+                int(bb * 0.65),
+            )
+        if "ssws" in visible_layers and self.ssws[row, col] > self.FLOAT_FILL:
+            br, bg, bb = self._hex_to_rgb(base)
+            return "#{:02x}{:02x}{:02x}".format(
+                min(255, int(br * 0.65 + 200 * 0.35)),
+                int(bg * 0.65),
+                min(255, int(bb * 0.65 + 200 * 0.35)),
+            )
+        return base
 
     # ------------------------------------------------------------------
     # Vectorised colour helpers (backend-independent)
@@ -1478,6 +1536,31 @@ class GridModel:
         if "water" in visible_layers:
             self._apply_water_to_array(arr)
 
+        # Irrigation overlay (applied on top of all surface layers)
+        if "irrigation" in visible_layers:
+            irr_mask = self.irrigation_flag == 1
+            if np.any(irr_mask):
+                ir, ig, ib = 0, 170, 255
+                arr[irr_mask, 0] = (arr[irr_mask, 0] * 0.65 + ir * 0.35).astype(np.uint8)
+                arr[irr_mask, 1] = (arr[irr_mask, 1] * 0.65 + ig * 0.35).astype(np.uint8)
+                arr[irr_mask, 2] = (arr[irr_mask, 2] * 0.65 + ib * 0.35).astype(np.uint8)
+
+        # SHF overlay (orange tint on cells with a prescribed flux value)
+        if "shf" in visible_layers:
+            shf_mask = self.shf > self.FLOAT_FILL
+            if np.any(shf_mask):
+                arr[shf_mask, 0] = np.clip(arr[shf_mask, 0] * 0.65 + 255 * 0.35, 0, 255).astype(np.uint8)
+                arr[shf_mask, 1] = np.clip(arr[shf_mask, 1] * 0.65 + 140 * 0.35, 0, 255).astype(np.uint8)
+                arr[shf_mask, 2] = (arr[shf_mask, 2] * 0.65).astype(np.uint8)
+
+        # SSWS overlay (purple tint on cells with a prescribed scalar flux value)
+        if "ssws" in visible_layers:
+            ssws_mask = self.ssws > self.FLOAT_FILL
+            if np.any(ssws_mask):
+                arr[ssws_mask, 0] = np.clip(arr[ssws_mask, 0] * 0.65 + 200 * 0.35, 0, 255).astype(np.uint8)
+                arr[ssws_mask, 1] = (arr[ssws_mask, 1] * 0.65).astype(np.uint8)
+                arr[ssws_mask, 2] = np.clip(arr[ssws_mask, 2] * 0.65 + 200 * 0.35, 0, 255).astype(np.uint8)
+
         return arr
 
     # ------------------------------------------------------------------
@@ -1495,6 +1578,7 @@ class GridModel:
         veg_f  = self.vegetation_type.ravel().astype(int)
         soil_f = self.soil_type.ravel().astype(int)
         pav_f  = self.pavement_type.ravel().astype(int)
+        st_f   = self.street_type.ravel().astype(int)
         wat_f  = self.water_type.ravel().astype(int)
         bid_f  = self.building_id.ravel().astype(int)
         bh_f   = self.building_height.ravel().astype(float)
@@ -1506,6 +1590,7 @@ class GridModel:
                 "vegetation_type":   int(veg_f[i]),
                 "soil_type":         int(soil_f[i]),
                 "pavement_type":     int(pav_f[i]),
+                "street_type":       int(st_f[i]),
                 "water_type":        int(wat_f[i]),
                 "building_id":       int(bid_f[i]),
                 "building_height":   float(bh_f[i]),
