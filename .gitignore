@@ -1,6 +1,8 @@
 /.conda_PALMPaint
 /__pycache__
 /base/__pycache__
+/tests/__pycache__
+/.pytest_cache
 quicksave
 quicksave*
 /palmpaint_venv
@@ -14,3 +16,7 @@ report.txt
 test
 testimctest
 Blitzprojekt_N03
+
+# Python virtual environments
+/venv
+/.venv
