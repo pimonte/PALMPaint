@@ -8,6 +8,20 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.6-alpha] - dev branch (unreleased)
+
+### Added
+- **Test suite** (`tests/`, `pytest.ini`): headless pytest tests. Round trips `SaveModel` to `LoadModel`, `export_state()` to `from_state()` and `padded()` to `cropped()` compare every 2D layer, `water_pars` and all building parameters. Regression tests for Add Border / Crop with single trees
+- `requirements-dev.txt`: development dependencies (`pytest`)
+
+### Fixed
+- `GridModel.padded()` / `cropped()`: crashed with `AttributeError` when single trees were placed, because tree records are dicts but were accessed as attributes. Add Border and Crop now work with trees and shift the tree records correctly
+
+### Changed
+- `environment.yml`: added `pillow` (without it, fresh environments silently fell back to the slow Tk backend), conda-forge as the only channel, package name `netcdf4`, `matplotlib` / `pyvista` listed as optional
+- `requirements.txt`: added `pillow`, `matplotlib` / `pyvista` listed as optional
+
+---
 ## [0.5.5-alpha] — dev branch (unreleased)
 
 ### Added

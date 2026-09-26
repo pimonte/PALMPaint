@@ -571,8 +571,8 @@ class GridModel:
                     new.resolved_vegetation[key] = dst
         new.tree_instances = copy.deepcopy(self.tree_instances)
         for t in new.tree_instances:
-            t.col += n_west
-            t.row += n_north
+            t["col"] += n_west
+            t["row"] += n_north
         new.next_tree_id = self.next_tree_id
         return new
 
@@ -607,10 +607,10 @@ class GridModel:
                     new.resolved_vegetation[key] = np.array(src[:, r, c], copy=True)
         new.tree_instances = []
         for t in self.tree_instances:
-            if col_start <= t.col < col_start + new_nx and row_start <= t.row < row_start + new_ny:
+            if col_start <= t["col"] < col_start + new_nx and row_start <= t["row"] < row_start + new_ny:
                 tc = copy.deepcopy(t)
-                tc.col -= col_start
-                tc.row -= row_start
+                tc["col"] -= col_start
+                tc["row"] -= row_start
                 new.tree_instances.append(tc)
         new.next_tree_id = self.next_tree_id
         return new
