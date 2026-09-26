@@ -2623,11 +2623,6 @@ class PaintApplication(framework.Framework):
         self._apply_editor_state_to_backend()
         self._sync_editor_state_to_ui()
         self._set_export_buildings_3d(bool(resolved_vegetation.get("source_has_buildings_3d")))
-        loaded_tid = resolved_vegetation.get("tree_id") if resolved_vegetation else None
-        if loaded_tid is not None:
-            max_id = int(loaded_tid.max())
-            if max_id > 0:
-                self.model.next_tree_id = max_id + 1
         self.backend.model = self.model
         self.rescale_grid()
         self.undo_stack.clear()

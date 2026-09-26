@@ -16,6 +16,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 
 ### Fixed
 - `GridModel.padded()` / `cropped()`: crashed with `AttributeError` when single trees were placed, because tree records are dicts but were accessed as attributes. Add Border and Crop now work with trees and shift the tree records correctly
+- `LoadModel()` now sets `next_tree_id` after the highest loaded tree ID, so new trees never reuse an ID from the file. Previously only the GUI did this
 
 ### Changed
 - `environment.yml`: added `pillow` (without it, fresh environments silently fell back to the slow Tk backend), conda-forge as the only channel, package name `netcdf4`, `matplotlib` / `pyvista` listed as optional

@@ -273,6 +273,11 @@ def LoadModel(filename="output.nc", surface_config=None):
         model._loaded_rv = resolved_vegetation
         model.resolved_vegetation = resolved_vegetation
 
+        if tree_id is not None:
+            max_id = int(tree_id.max())
+            if max_id > 0:
+                model.next_tree_id = max_id + 1
+
     return model, nx, ny, res, dz, ori, resolved_vegetation, georef
 
 
