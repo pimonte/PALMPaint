@@ -45,10 +45,65 @@ _PLOT_TYPES = [
 
 _UNITS = ["Gridboxes", "Meters", "Meters from origin"]
 
+# Parametrized and resolved vegetation must be told apart at a glance
+# ("green" and "darkgreen" were almost the same on screen).
+_VEG_COLOR = "#8fce5a"
+_RESOLVED_VEG_COLOR = "#1a4d1a"
+
+
+def cross_section_slices(model, axis, slice_idx):
+    """Return terrain, building height and LAD along one section.
+
+    Model row 0 is the south edge and column 0 the west edge, so the returned
+    1D arrays run south to north ("N-S", slice_idx = column) or west to east
+    ("W-E", slice_idx = row). lad is None or (nz, n) on the terrain-following
+    zlad levels, exactly as stored in the driver.
+    """
+    lad_vol = model.resolved_vegetation.get("lad")
+    if axis == "N-S":
+        j = min(max(int(slice_idx), 0), model.nx - 1)
+        zt = np.asarray(model.zt[:, j], dtype=float)
+        bh = np.asarray(model.building_height[:, j], dtype=float)
+        lad = np.asarray(lad_vol[:, :, j]) if lad_vol is not None else None
+        return zt, bh, lad, j
+    i = min(max(int(slice_idx), 0), model.ny - 1)
+    zt = np.asarray(model.zt[i, :], dtype=float)
+    bh = np.asarray(model.building_height[i, :], dtype=float)
+    lad = np.asarray(lad_vol[:, i, :]) if lad_vol is not None else None
+    return zt, bh, lad, i
+
+
+def lad_on_terrain(lad_2d, zlad, zt_slice, dz):
+    """Move terrain-following LAD onto absolute heights.
+
+    PALM defines zlad as the height above the local ground and places the
+    canopy at k + topo_top_ind, so every column is lifted by its own terrain
+    height. Returns (lad_abs, dz_lad): lad_abs has shape (n_levels, n) with
+    level m covering [m * dz_lad, (m + 1) * dz_lad]. Empty cells are 0.
+    """
+    lad_2d = np.asarray(lad_2d, dtype=float)
+    lad_2d = np.where((lad_2d > 0) & (lad_2d < 1e6), lad_2d, 0.0)
+    nz, n = lad_2d.shape
+    if zlad is not None and len(zlad) == nz:
+        zlad = np.asarray(zlad, dtype=float)
+        dz_lad = float(zlad[-1] - zlad[-2]) if nz > 1 else float(dz)
+    else:
+        dz_lad = float(dz)
+        zlad = np.concatenate(([0.0], (np.arange(1, nz) - 0.5) * dz_lad))
+    zt = np.where(np.isfinite(zt_slice) & (zt_slice > GridModel.FLOAT_FILL), zt_slice, 0.0)
+    z_abs = zt[np.newaxis, :] + zlad[:, np.newaxis]              # (nz, n)
+    level = np.maximum(np.floor(z_abs / dz_lad + 1e-6).astype(int), 0)
+    n_levels = int(level.max()) + 1 if level.size else 1
+    lad_abs = np.zeros((n_levels, n), dtype=float)
+    cols = np.broadcast_to(np.arange(n), (nz, n))
+    np.maximum.at(lad_abs, (level.ravel(), cols.ravel()), lad_2d.ravel())
+    return lad_abs, dz_lad
+
+
 class SDPlotDialog(tk.Toplevel):
     """Embedded-matplotlib dialog exposing analysis plots for the current model."""
 
-    def __init__(self, parent: tk.Widget, model: GridModel, georef) -> None:
+    def __init__(self, parent: tk.Widget, model: GridModel, georef, model_source=None) -> None:
         super().__init__(parent)
         self.title("Analysis Plots")
         self.resizable(True, True)
@@ -56,6 +111,10 @@ class SDPlotDialog(tk.Toplevel):
 
         self._model = model
         self._georef = georef
+        # Optional callable returning (model, georef). The app replaces its model
+        # on load, undo, border and crop, so the dialog asks for the current one
+        # before every redraw instead of keeping the model it was opened with.
+        self._model_source = model_source
 
         self._units_var = tk.StringVar(value=_UNITS[0])
         self._section_axis_var = tk.StringVar(value="N-S")
@@ -138,7 +197,7 @@ class SDPlotDialog(tk.Toplevel):
         ttk.Label(self._section_frame, text="Slice index:").pack(anchor="w", pady=(4, 0))
         self._slice_spin = ttk.Spinbox(
             self._section_frame, textvariable=self._slice_var,
-            from_=0, to=max(self._model.nx, self._model.ny) - 1,
+            from_=0, to=self._model.nx - 1,
             width=6, command=self._refresh,
         )
         self._slice_spin.pack(anchor="w")
@@ -164,6 +223,7 @@ class SDPlotDialog(tk.Toplevel):
         ).pack(anchor="w")
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=4)
+        ttk.Button(parent, text="Refresh", command=self._refresh).pack(anchor="w")
         ttk.Button(parent, text="Export…", command=self._export).pack(anchor="w")
 
         self._update_option_panels()
@@ -190,12 +250,16 @@ class SDPlotDialog(tk.Toplevel):
         self._refresh()
 
     def _on_section_axis_change(self) -> None:
+        self._update_slice_limit()
+        self._refresh()
+
+    def _update_slice_limit(self) -> None:
+        # N-S sections pick a column (x index), W-E sections pick a row (y index).
         m = self._model
-        limit = (m.ny if self._section_axis_var.get() == "N-S" else m.nx) - 1
+        limit = (m.nx if self._section_axis_var.get() == "N-S" else m.ny) - 1
         self._slice_spin.config(to=limit)
         if self._slice_var.get() > limit:
             self._slice_var.set(limit)
-        self._refresh()
 
     def _update_option_panels(self) -> None:
         sel = self._selected_plot()
@@ -219,6 +283,9 @@ class SDPlotDialog(tk.Toplevel):
     def _refresh(self) -> None:
         if self._fig is None:
             return
+        if self._model_source is not None:
+            self._model, self._georef = self._model_source()
+            self._update_slice_limit()
         self._fig.clear()
         ax = self._fig.add_subplot(111)
         dispatch = {
@@ -383,7 +450,7 @@ class SDPlotDialog(tk.Toplevel):
         
 
         labels = ["bare", "vegetation", "resolved veg.", "pavement", "water", "building", "bare soil"]
-        colors = ["#f0f0f0", "green", "darkgreen", "gray", "royalblue", "black", "#8c564b"]
+        colors = ["#f0f0f0", _VEG_COLOR, _RESOLVED_VEG_COLOR, "gray", "royalblue", "black", "#8c564b"]
         cmap = mcolors.ListedColormap(colors)
         ax.imshow(
             cat, origin="lower", cmap=cmap, vmin=-0.5, vmax=6.5,
@@ -573,27 +640,18 @@ class SDPlotDialog(tk.Toplevel):
         slice_idx = self._slice_var.get()
         u = self._units_var.get()
 
-        lad_vol = m.resolved_vegetation.get("lad")
-
+        # Model row 0 is south, so both sections start at the south / west edge.
+        zt_slice, bh_slice, lad_2d, used_idx = cross_section_slices(m, axis, slice_idx)
         if axis == "N-S":
-            j = min(slice_idx, m.nx - 1)
-            # rows 0..ny-1 in array, row 0 = north; flip so south is left
-            zt_slice = m.zt[::-1, j]
-            bh_slice = m.building_height[::-1, j]
-            lad_2d = lad_vol[:, ::-1, j] if lad_vol is not None else None
             n_horiz = m.ny
             horiz = self._horiz_coords(n_horiz, axis="y")
             horiz_lbl = "y – S→N"
-            title = f"Cross-section N–S (x col {j})"
+            title = f"Cross-section N–S (x col {used_idx})"
         else:
-            i_arr = min(m.ny - 1 - slice_idx, m.ny - 1)
-            zt_slice = m.zt[i_arr, :]
-            bh_slice = m.building_height[i_arr, :]
-            lad_2d = lad_vol[:, i_arr, :] if lad_vol is not None else None
             n_horiz = m.nx
             horiz = self._horiz_coords(n_horiz, axis="x")
             horiz_lbl = "x – W→E"
-            title = f"Cross-section W–E (y row {slice_idx})"
+            title = f"Cross-section W–E (y row {used_idx})"
 
         dz = m.dz
 
@@ -621,17 +679,18 @@ class SDPlotDialog(tk.Toplevel):
                 color="#555555", label="buildings", step="mid",
             )
 
-        # LAD via imshow (fast, no per-cell loop)
+        # LAD via imshow (fast, no per-cell loop). zlad is height above the
+        # ground, so every column is lifted by its terrain height first.
         if lad_2d is not None:
-            nz = lad_2d.shape[0]
-            z = self._z_coords(nz)
-            lad_ma = self._lad_masked(lad_2d)
+            lad_abs, dz_lad = lad_on_terrain(
+                lad_2d, m.resolved_vegetation.get("zlad"), zt_slice, dz)
+            lad_ma = np.ma.masked_less_equal(lad_abs, 0.0)
+            z_scale = 1.0 / dz if u == "Gridboxes" else 1.0
 
-            dz_disp = (z[1] - z[0]) if nz > 1 else (1.0 if u == "Gridboxes" else dz)
             dx_disp = (horiz[1] - horiz[0]) if n_horiz > 1 else (
                 1.0 if u == "Gridboxes" else m.res)
-            z_bot = z[0] - dz_disp / 2
-            z_top = z[-1] + dz_disp / 2
+            z_bot = 0.0
+            z_top = lad_abs.shape[0] * dz_lad * z_scale
             x_left = horiz[0] - dx_disp / 2
             x_right = horiz[-1] + dx_disp / 2
 
@@ -677,7 +736,8 @@ class SDPlotDialog(tk.Toplevel):
         # Mean over vegetated cells only; unfilled levels get 0.
         lad_mean = lad_ma.mean(axis=(1, 2)).filled(0.0)
         z = self._z_coords(len(lad_mean))
-        dz_disp = (z[1] - z[0]) * 0.8 if len(z) > 1 else 0.8
+        # zlad starts with a half-size step (0, dz/2, 3dz/2, ...), so use the last step.
+        dz_disp = (z[-1] - z[-2]) * 0.8 if len(z) > 1 else 0.8
         ax.barh(z, lad_mean, height=dz_disp,
                 color="forestgreen", edgecolor="white", linewidth=0.3)
         ax.set_xlabel("LAD – mean over vegetated cells (m² m⁻³)")
@@ -699,7 +759,7 @@ class SDPlotDialog(tk.Toplevel):
 
         labels = ["Building", "Pavement", "Vegetation", "Water", "Resolved veg."]
         counts = [n_bld, n_pav, n_veg, n_wat, n_rv]
-        colors = ["firebrick", "gray", "green", "royalblue", "darkgreen"]
+        colors = ["firebrick", "gray", _VEG_COLOR, "royalblue", _RESOLVED_VEG_COLOR]
 
         fracs = [c / total * 100.0 for c in counts]
         present = [(l, f, c) for l, f, c in zip(labels, fracs, colors) if f > 0]

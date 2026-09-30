@@ -1481,10 +1481,16 @@ class PaintApplication(framework.Framework):
             )
             return
         if self._sd_plot_dialog is None or not self._sd_plot_dialog.winfo_exists():
-            self._sd_plot_dialog = SDPlotDialog(self.root, self.model, self.georef)
+            # model_source hands over the current model on every redraw, because
+            # self.model is replaced on load, undo, Add Border and Crop.
+            self._sd_plot_dialog = SDPlotDialog(
+                self.root, self.model, self.georef,
+                model_source=lambda: (self.model, self.georef),
+            )
         else:
             self._sd_plot_dialog.deiconify()
             self._sd_plot_dialog.lift()
+            self._sd_plot_dialog._refresh()
 
     def _on_generator_apply(self, params_dict):
         """Callback from TreeGeneratorDialog — sync parameters back to spinboxes."""
