@@ -38,8 +38,14 @@ from base.load_sd import LoadModel, find_unsupported_variables
 
 _arg_parser = argparse.ArgumentParser(add_help=False)
 _arg_parser.add_argument("--backend", choices=["pil", "tk"], default=None)
+_arg_parser.add_argument("--experimental", action="store_true")
 _arg_parser.add_argument("startup_path", nargs="?", default=None)
 _cli_args, _ = _arg_parser.parse_known_args()
+
+# Parked brushes: untested, not part of a release. Shown only with --experimental.
+_EXPERIMENTAL_TOOLS = ("irrigation", "shf", "ssws") if _cli_args.experimental else ()
+if _cli_args.experimental:
+    print("Experimental brushes enabled (--experimental): " + ", ".join(_EXPERIMENTAL_TOOLS))
 
 if _cli_args.backend == "tk":
     _BACKEND_CLASS = tkbackend.TkCanvasBackend
@@ -76,7 +82,7 @@ class PaintApplication(framework.Framework):
     
 
     tool_bar_functions = (
-        "vegetation", "pavement", "water", "building", "eraser", "single_tree", "select", "irrigation", "shf", "ssws")
+        "vegetation", "pavement", "water", "building", "eraser", "single_tree", "select") + _EXPERIMENTAL_TOOLS
     height_tool_bar_functions = ("zt_set", "zt_raise", "zt_lower")
     soil_tool_bar_functions = ()
     selected_tool_bar_function = tool_bar_functions[0]
@@ -2950,7 +2956,8 @@ class PaintApplication(framework.Framework):
     def create_tool_bar_buttons(self):
         for child in self.tool_bar.grid_slaves():
             info = child.grid_info()
-            if int(info.get("row", 0)) < 4:
+            # Tool buttons use the rows above the brush size slider (row 15).
+            if int(info.get("row", 0)) < 15:
                 child.destroy()
 
         if self.active_view == "heightmap":
