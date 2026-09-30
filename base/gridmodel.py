@@ -319,7 +319,7 @@ class GridModel:
         self.pavement_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.street_type     = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
         self.water_type      = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
-        self.building_id     = np.full((ny, nx), self.INT_FILL,  dtype=np.int32)
+        self.building_id     = np.full((ny, nx), self.BUILDING_ID_FILL, dtype=np.int32)
         self.building_height = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
         self.building_type   = np.full((ny, nx), self.INT_FILL,  dtype=np.int8)
 
@@ -1075,7 +1075,7 @@ class GridModel:
                     stored_height = self.FLOAT_FILL
 
             if stored_height <= self.FLOAT_FILL or not np.isfinite(stored_height):
-                self.building_id[row, col] = self.INT_FILL
+                self.building_id[row, col] = self.BUILDING_ID_FILL
                 self.building_height[row, col] = self.FLOAT_FILL
                 self.building_type[row, col] = self.INT_FILL
                 self.clear_building_parameters(row, col)
@@ -1117,7 +1117,7 @@ class GridModel:
         self.building_height[:, :] = building_quantizer(self.building_height)
 
         removed_mask = self.building_height <= self.FLOAT_FILL
-        self.building_id[removed_mask] = self.INT_FILL
+        self.building_id[removed_mask] = self.BUILDING_ID_FILL
         self.building_type[removed_mask] = self.INT_FILL
         self.clear_building_parameters_where(removed_mask)
 

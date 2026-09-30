@@ -221,7 +221,7 @@ def _fill_cavities(classes, col_id):
 # Reconstruct 2-D arrays from the filtered 3-D classification
 # ---------------------------------------------------------------------------
 
-def _reconstruct_2d(classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type):
+def _reconstruct_2d(classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type, building_id_fill):
     """Derive zt / building_height / building_id / building_type from the
     filtered voxel classes array using vectorised NumPy operations."""
     nz, ny, nx = classes.shape
@@ -298,7 +298,7 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
 
     clear_mask = no_building & ~surface_only & ~lost_buildings
     new_building_height[clear_mask] = float(float_fill)
-    new_building_id[clear_mask]     = int_fill
+    new_building_id[clear_mask]     = building_id_fill
     new_building_type[clear_mask]   = int_fill
     new_building_height[no_building & surface_only] = 0.0
     # For sub-voxel buildings: restore original height; id/type already copied.
@@ -311,7 +311,7 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill, default_building_type=1):
+def apply_topography_filters(zt, building_height, building_id, building_type, dz, float_fill, int_fill, default_building_type=1, building_id_fill=-9999):
     """Apply PALM-style hole and cavity filtering to a discrete constant-dz mask."""
     classes, col_id, col_type, step = _build_topography_classification(
         zt, building_height, building_id, building_type, dz, float_fill
@@ -322,7 +322,8 @@ def apply_topography_filters(zt, building_height, building_id, building_type, dz
     cavity_count, cavity_fill_mask = _fill_cavities(classes, col_id)
 
     new_zt, new_bh, new_bid, new_btype = _reconstruct_2d(
-        classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type
+        classes, building_id, building_height, building_type, col_id, col_type, step, float_fill, int_fill, default_building_type,
+        building_id_fill,
     )
 
     return {
@@ -350,6 +351,7 @@ def preview_filter_sweep(model):
         model.FLOAT_FILL,
         model.INT_FILL,
         _default_building_type(getattr(model, "surface_config", None)),
+        model.BUILDING_ID_FILL,
     )
     preview_mask = filter_result["hole_fill_columns"] | filter_result["cavity_fill_columns"]
     return {

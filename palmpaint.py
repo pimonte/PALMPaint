@@ -392,7 +392,7 @@ class PaintApplication(framework.Framework):
                 "vegetation_type": self.model.INT_FILL,
                 "pavement_type":   self.model.INT_FILL,
                 "water_type":      self.model.INT_FILL,
-                "building_id":     self.model.INT_FILL,
+                "building_id":     self.model.BUILDING_ID_FILL,
                 "building_height": self.model.FLOAT_FILL,
                 "building_type":   self.model.INT_FILL,
             }
