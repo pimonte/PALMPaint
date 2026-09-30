@@ -441,6 +441,18 @@ class GridModel:
             "source_building_type": rv.get("source_building_type"),
         }
 
+    @staticmethod
+    def state_nbytes(state):
+        """Return the memory in bytes used by the numpy arrays in a snapshot."""
+
+        if isinstance(state, np.ndarray):
+            return state.nbytes
+        if isinstance(state, dict):
+            return sum(GridModel.state_nbytes(v) for v in state.values())
+        if isinstance(state, (list, tuple)):
+            return sum(GridModel.state_nbytes(v) for v in state)
+        return 0
+
     def export_state(self):
         """Return an undo-friendly snapshot of the model state."""
         return {

@@ -2658,6 +2658,11 @@ class PaintApplication(framework.Framework):
     
     def save_state(self):
         self.undo_stack.append(self.model.export_state())
+        # Drop the oldest snapshots, but always keep the newest one.
+        snapshot_bytes = gridmodel.GridModel.state_nbytes(self.undo_stack[-1])
+        while (len(self.undo_stack) > 1
+               and len(self.undo_stack) * snapshot_bytes > self.undo_memory_limit):
+            self.undo_stack.pop(0)
         self.redo_stack.clear()
         self.dirty = True
 
@@ -2797,6 +2802,8 @@ class PaintApplication(framework.Framework):
         self.height_view_levels = 10
 
         self.undo_stack = []
+        self.undo_memory_limit = 2 * 1024**3        # Undo memory limit in bytes (2 GB)
+
         self.redo_stack = []
         self.dirty = False
 
