@@ -34,6 +34,7 @@ import base.report as report
 import base.framework as framework
 import base.gridmodel as gridmodel
 import base.tkbackend as tkbackend
+from base.load_sd import LoadModel, find_unsupported_variables
 
 _arg_parser = argparse.ArgumentParser(add_help=False)
 _arg_parser.add_argument("--backend", choices=["pil", "tk"], default=None)
@@ -58,7 +59,6 @@ from base.geo_reference import (
     default_georeference,
     snap_georeference_to_grid,
 )
-from base.load_sd import LoadModel
 import base.surface_config as surface_config
 import base.welcome_screen as welcome_screen
 
@@ -2642,7 +2642,15 @@ class PaintApplication(framework.Framework):
         self.refresh_project_info_labels()
         self.set_active_view(self.active_view)
         self.dirty = False
-        
+        unsupported = find_unsupported_variables(file_path)
+        if unsupported:
+            messagebox.showwarning(
+                "Unsupported variables",
+                "PALMPaint does not support these variables in the file.\n"
+                "They are not shown and will be missing when you save:\n\n"
+                + "\n".join(unsupported),
+            )
+
         print(f"Loaded NetCDF project from {file_path}")
             
     def load_project_netcdf(self, event=None):

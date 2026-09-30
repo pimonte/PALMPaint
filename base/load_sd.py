@@ -293,3 +293,25 @@ def Load(filename="output.nc", surface_config=None):
         surface_config=surface_config,
     )
     return model.to_legacy_dict(), nx, ny, res, dz, ori, resolved_vegetation, georef
+
+# Variables that survive load and save. Coordinates and georeference
+# variables are not read, but SaveModel writes them again.
+_SUPPORTED_VARIABLES = {
+    "x", "y", "z", "zlad", "crs", "lat", "lon", "E_UTM", "N_UTM",
+    "zt", "vegetation_type", "soil_type", "pavement_type", "street_type",
+    "water_type", "water_pars", "irrigation_flag", "shf", "ssws",
+    "building_id", "building_type", "buildings_2d", "buildings_3d",
+    "lad", "bad", "tree_id",
+}
+_SUPPORTED_VARIABLES.update(name for name, _dims in GridModel.BUILDING_PARAMETER_SPECS)
+
+
+def find_unsupported_variables(filename):
+    """Return the sorted names of variables in a file that PALMPaint does not save."""
+    with Dataset(filename, "r") as nc_file:
+        # Index variables like nwater_pars only label a dimension. PALM reads the
+        # dimension length, not the variable, so dropping them loses nothing.
+        return sorted(
+            name for name, var in nc_file.variables.items()
+            if name not in _SUPPORTED_VARIABLES and var.dimensions != (name,)
+        )

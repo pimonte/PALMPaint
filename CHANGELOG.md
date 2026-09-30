@@ -13,6 +13,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 ### Added
 - **Test suite** (`tests/`, `pytest.ini`): headless pytest tests. Round trips `SaveModel` to `LoadModel`, `export_state()` to `from_state()` and `padded()` to `cropped()` compare every 2D layer, `water_pars` and all building parameters. Regression tests for Add Border / Crop with single trees
 - `requirements-dev.txt`: development dependencies (`pytest`)
+- Warning on load when the file contains variables PALMPaint does not save. Before, they were dropped silently on the next save (e.g. `surface_fraction`, `street_crossing` or `tree_type` from `palm_csd` drivers). New `find_unsupported_variables()` and the set `_SUPPORTED_VARIABLES` in `base/load_sd.py`, the dialog is shown by `load_project_netcdf_from_path()` in `palmpaint.py`. Interim until the Phase 1 pass-through. Test in `tests/test_load.py`
 
 ### Fixed
 - `GridModel.padded()` / `cropped()`: crashed with `AttributeError` when single trees were placed, because tree records are dicts but were accessed as attributes. Add Border and Crop now work with trees and shift the tree records correctly
