@@ -120,6 +120,11 @@ def LoadModel(filename="output.nc", surface_config=None):
       (model, nx, ny, res, dz, origin_tuple, resolved_vegetation, georef)
     """
     with Dataset(filename, 'r') as nc_file:
+        # A PALM static driver always has x and y dimensions
+        for dim in ("x", "y"):
+            if dim not in nc_file.dimensions:
+                raise ValueError(f"The file has no {dim} dimension. Is it a PALM static driver?")
+
         # Get dimensions
         nx = len(nc_file.dimensions["x"])
         ny = len(nc_file.dimensions["y"])

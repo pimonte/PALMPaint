@@ -2606,6 +2606,10 @@ class PaintApplication(framework.Framework):
             )
         except Exception as e:
             print(f"Error loading NetCDF file: {e}")
+            tk.messagebox.showerror(
+                "Load failed",
+                f"Could not load\n{file_path}\n\n{type(e).__name__}: {e}",
+            )
             return
         
         # Replace current state with loaded project
