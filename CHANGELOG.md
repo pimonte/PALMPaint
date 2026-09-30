@@ -17,6 +17,7 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 ### Fixed
 - `GridModel.padded()` / `cropped()`: crashed with `AttributeError` when single trees were placed, because tree records are dicts but were accessed as attributes. Add Border and Crop now work with trees and shift the tree records correctly
 - `LoadModel()` now sets `next_tree_id` after the highest loaded tree ID, so new trees never reuse an ID from the file. Previously only the GUI did this
+- `GridModel.padded()` / `cropped()`: the vegetation loaded from a file (`_loaded_rv`) was not carried over, so placing a tree after Add Border or Crop wiped all trees from the file. Both now copy `_loaded_rv` through the new helpers `_padded_rv()` / `_cropped_rv()` in `base/gridmodel.py`, and keep `resolved_vegetation` and `_loaded_rv` as the same object when they were before. New border voxels get 0 (no vegetation) instead of `-9999.0`. The `source_*` building data of a loaded file is not copied because it has the old grid size. Regression test `test_loaded_trees_survive_border_or_crop_and_new_tree` now runs for both pad and crop
 
 ### Changed
 - `environment.yml`: added `pillow` (without it, fresh environments silently fell back to the slow Tk backend), conda-forge as the only channel, package name `netcdf4`, `matplotlib` / `pyvista` listed as optional

@@ -534,6 +534,36 @@ class GridModel:
         model._invalidate_building_cache()
         return model
 
+    def _padded_rv(self, rv, r, c):
+        """Return a copy of a vegetation dict placed at rows r / cols c of this grid.
+
+        Only zlad, lad, bad and tree_id are copied. The source_* building data
+        in a loaded dict still has the old grid size and would break
+        _building_top_z() and the validation, so it is left out.
+        New border voxels get 0 (no vegetation), like LoadModel and the tree rebuild.
+        """
+        out = {"zlad": rv.get("zlad"), "lad": None, "bad": None, "tree_id": None}
+        for key in ("lad", "bad", "tree_id"):
+            src = rv.get(key)
+            if src is not None:
+                dst = self.allocate_storage((src.shape[0], self.ny, self.nx),
+                                            src.dtype, fill_value=0, name_prefix=key)
+                dst[:, r, c] = src
+                out[key] = dst
+        return out
+
+    def _cropped_rv(self, rv, r, c):
+        """Return a copy of a vegetation dict cut to rows r / cols c.
+
+        Same keys as _padded_rv(), for the same reason.
+        """
+        out = {"zlad": rv.get("zlad"), "lad": None, "bad": None, "tree_id": None}
+        for key in ("lad", "bad", "tree_id"):
+            src = rv.get(key)
+            if src is not None:
+                out[key] = self.materialize_storage(src[:, r, c], name_prefix=key)
+        return out
+
     def padded(self, n_north, n_south, n_west, n_east):
         """Return a new GridModel with padding added on each side.
 
@@ -560,15 +590,15 @@ class GridModel:
         new.ssws[r, c]            = self.ssws
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
             new.building_pars[name][(..., r, c)] = self.building_pars[name]
-        if self.resolved_vegetation["lad"] is not None:
-            new.resolved_vegetation["zlad"] = self.resolved_vegetation["zlad"]
-            for key in ("lad", "bad", "tree_id"):
-                src = self.resolved_vegetation[key]
-                if src is not None:
-                    dst = np.full((src.shape[0], new_ny, new_nx),
-                                  self.FLOAT_FILL, dtype=src.dtype)
-                    dst[:, r, c] = src
-                    new.resolved_vegetation[key] = dst
+        # The loaded base layer must move along, otherwise the next placed
+        # tree rebuilds the vegetation without the trees from the file.
+        if self._loaded_rv is not None:
+            new._loaded_rv = new._padded_rv(self._loaded_rv, r, c)
+        if self.resolved_vegetation is self._loaded_rv:
+            # Right after loading both names point to the same dict, keep it that way
+            new.resolved_vegetation = new._loaded_rv
+        elif self.resolved_vegetation["lad"] is not None:
+            new.resolved_vegetation = new._padded_rv(self.resolved_vegetation, r, c)
         new.tree_instances = copy.deepcopy(self.tree_instances)
         for t in new.tree_instances:
             t["col"] += n_west
@@ -599,12 +629,12 @@ class GridModel:
         new.ssws[:, :]            = self.ssws[r, c]
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
             new.building_pars[name][...] = self.building_pars[name][(..., r, c)]
-        if self.resolved_vegetation["lad"] is not None:
-            new.resolved_vegetation["zlad"] = self.resolved_vegetation["zlad"]
-            for key in ("lad", "bad", "tree_id"):
-                src = self.resolved_vegetation[key]
-                if src is not None:
-                    new.resolved_vegetation[key] = np.array(src[:, r, c], copy=True)
+        if self._loaded_rv is not None:
+            new._loaded_rv = new._cropped_rv(self._loaded_rv, r, c)
+        if self.resolved_vegetation is self._loaded_rv:
+            new.resolved_vegetation = new._loaded_rv
+        elif self.resolved_vegetation["lad"] is not None:
+            new.resolved_vegetation = new._cropped_rv(self.resolved_vegetation, r, c)
         new.tree_instances = []
         for t in self.tree_instances:
             if col_start <= t["col"] < col_start + new_nx and row_start <= t["row"] < row_start + new_ny:

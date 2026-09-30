@@ -195,15 +195,23 @@ def test_border_and_crop_work_with_placed_trees(model_with_tree, operation):
     assert expected_cell in lad_cells(result)
 
 
-def test_loaded_trees_survive_border_and_new_tree(model_with_tree, tmp_path):
+@pytest.mark.parametrize("operation", ["pad", "crop"])
+def test_loaded_trees_survive_border_or_crop_and_new_tree(model_with_tree, tmp_path, operation):
     loaded = save_and_load(model_with_tree, tmp_path / "driver.nc")
-    padded = loaded.padded(n_north=1, n_south=1, n_west=1, n_east=1)
-    old_tree = (TREE_CELL[0] + 1, TREE_CELL[1] + 1)
-    new_tree = (NEW_TREE_CELL[0] + 1, NEW_TREE_CELL[1] + 1)
+    # Pad adds one cell on every side, crop cuts one off the top and left.
+    # Both trees stay inside the grid in either case.
+    if operation == "pad":
+        result = loaded.padded(n_north=1, n_south=1, n_west=1, n_east=1)
+        shift = 1
+    else:
+        result = loaded.cropped(col_start=1, row_start=1, new_nx=10, new_ny=8)
+        shift = -1
+    old_tree = (TREE_CELL[0] + shift, TREE_CELL[1] + shift)
+    new_tree = (NEW_TREE_CELL[0] + shift, NEW_TREE_CELL[1] + shift)
 
-    padded.add_tree(*new_tree, tree_height=10.0, crown_diameter=6.0)
+    result.add_tree(*new_tree, tree_height=10.0, crown_diameter=6.0)
 
-    cells = lad_cells(padded)
+    cells = lad_cells(result)
     assert new_tree in cells
     assert old_tree in cells, "the tree loaded from the file was wiped"
 
