@@ -16,8 +16,7 @@ def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
     if var_name in nc_file.variables:
         data = nc_file.variables[var_name][:]
         if hasattr(data, "filled"):
-            fv = getattr(nc_file.variables[var_name], "_FillValue", fill_value)
-            data = data.filled(fv)
+            data = data.filled(fill_value)
         if dtype is not None:
             data = data.astype(dtype)
         return data
@@ -28,11 +27,13 @@ def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
         dtype=dtype if dtype is not None else np.float32
     )
     
-def get_3d_data(nc_file, var_name, ny, nx, dtype=None, storage_factory=None):
+def get_3d_data(nc_file, var_name, ny, nx, fill_value, dtype=None, storage_factory=None):
     """Load a 3D variable (__, y, x) or return None.
 
     When ``storage_factory`` is provided, the data is streamed slice-by-slice
     into that target to avoid materializing the full 3D array in RAM.
+    Cells that hold the file's _FillValue get ``fill_value``, the model's fill
+    value, because other tools use other fill values (e.g. -9999.9).
     """
     if var_name not in nc_file.variables:
         return None
@@ -45,7 +46,6 @@ def get_3d_data(nc_file, var_name, ny, nx, dtype=None, storage_factory=None):
         return None
 
     target_dtype = np.dtype(dtype if dtype is not None else var.dtype)
-    fill_value = getattr(var, "_FillValue", -9999.0)
 
     if storage_factory is None:
         data = var[:]
@@ -71,8 +71,7 @@ def get_pars_data(nc_file, var_name, npars, ny, nx, fill_value=-9999.0, dtype=np
     if var_name in nc_file.variables:
         data = nc_file.variables[var_name][:]
         if hasattr(data, "filled"):
-            fv = getattr(nc_file.variables[var_name], "_FillValue", fill_value)
-            data = data.filled(fv)
+            data = data.filled(fill_value)
         return data.astype(dtype)
 
     return np.full((npars, ny, nx), fill_value, dtype=dtype)
@@ -96,11 +95,10 @@ def get_4d_data(nc_file, var_name, shape, fill_value=-9999.0, dtype=np.float32, 
         return data
 
     target_dtype = np.dtype(dtype)
-    fv = getattr(var, "_FillValue", fill_value)
     if storage_factory is None:
         data = var[:]
         if hasattr(data, "filled"):
-            data = data.filled(fv)
+            data = data.filled(fill_value)
         return data.astype(target_dtype, copy=False)
 
     data = storage_factory(shape, target_dtype, fill_value, var_name)
@@ -108,7 +106,7 @@ def get_4d_data(nc_file, var_name, shape, fill_value=-9999.0, dtype=np.float32, 
         for idx1 in range(shape[1]):
             layer = var[idx0, idx1, :, :]
             if hasattr(layer, "filled"):
-                layer = layer.filled(fv)
+                layer = layer.filled(fill_value)
             data[idx0, idx1, :, :] = np.asarray(layer, dtype=target_dtype)
     return data
 
@@ -214,6 +212,7 @@ def LoadModel(filename="output.nc", surface_config=None):
             "buildings_3d",
             ny,
             nx,
+            GridModel.INT_FILL,
             dtype=np.int8,
             storage_factory=_storage_factory,
         )
@@ -222,6 +221,7 @@ def LoadModel(filename="output.nc", surface_config=None):
             "lad",
             ny,
             nx,
+            GridModel.FLOAT_FILL,
             dtype=np.float32,
             storage_factory=_storage_factory,
         )
@@ -230,6 +230,7 @@ def LoadModel(filename="output.nc", surface_config=None):
             "bad",
             ny,
             nx,
+            GridModel.FLOAT_FILL,
             dtype=np.float32,
             storage_factory=_storage_factory,
         )
@@ -238,6 +239,7 @@ def LoadModel(filename="output.nc", surface_config=None):
             "tree_id",
             ny,
             nx,
+            -9999,
             dtype=np.int32,
             storage_factory=_storage_factory,
         )
