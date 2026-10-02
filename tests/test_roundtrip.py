@@ -114,9 +114,10 @@ def lad_cells(model):
     return set(zip(rows.tolist(), cols.tolist()))
 
 # shortcut for saving and loading a model
-def save_and_load(model, path):
+def save_and_load(model, path, georef=None):
     """Save like the app does, then load and return the loaded model."""
-    georef = default_georeference()
+    if georef is None:
+        georef = default_georeference()
     SaveModel(
         model, model.res, model.dz, georef.as_origin_tuple(), model.surface_config,
         str(path),

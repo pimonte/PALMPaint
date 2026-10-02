@@ -61,9 +61,16 @@ else:
 from base.create_sd import SaveModel
 from base.editor_state import EditorState, LAYER_KEYS
 from base.geo_reference import (
+    PALM_ORIGIN_USE,
     complete_georeference,
+    default_origin_note,
     default_georeference,
+    georeference_warning,
+    keep_crs_variable,
+    missing_palm_crs_attributes,
     snap_georeference_to_grid,
+    unknown_crs_georeference,
+    uses_default_origin,
 )
 import base.surface_config as surface_config
 import base.welcome_screen as welcome_screen
@@ -168,6 +175,8 @@ class PaintApplication(framework.Framework):
         """Persist a GeoReference on the application and keep legacy origin tuple in sync."""
         self.georef = georef
         self.origin = georef.as_origin_tuple()
+        # Ask once per origin before saving with the default Berlin origin
+        self._default_origin_confirmed = False
 
     def _reset_editor_state(self):
         self.editor_state = EditorState()
@@ -2429,6 +2438,19 @@ class PaintApplication(framework.Framework):
     ):
         """Persist the current project to a NetCDF file."""
         if (
+            show_export_warnings
+            and uses_default_origin(self.georef)
+            and not self._default_origin_confirmed
+        ):
+            proceed = messagebox.askokcancel(
+                "Default origin",
+                default_origin_note() + "\n\n" + PALM_ORIGIN_USE + "\n\nSave anyway?",
+            )
+            if not proceed:
+                return
+            self._default_origin_confirmed = True
+
+        if (
             validate_before_save
             and getattr(self, "_validate_before_save_var", None)
             and self._validate_before_save_var.get()
@@ -2662,6 +2684,11 @@ class PaintApplication(framework.Framework):
                 "They are not shown and will be missing when you save:\n\n"
                 + "\n".join(unsupported),
             )
+        georef_warning = georeference_warning(georef, tolerance=max(res, 1.0))
+        if georef_warning:
+            messagebox.showwarning("Georeference", georef_warning)
+            # The load warning already told about a default origin
+            self._default_origin_confirmed = True
 
         print(f"Loaded NetCDF project from {file_path}")
             
@@ -4458,7 +4485,7 @@ class PaintApplication(framework.Framework):
         lon_var = tk.StringVar(value=f"{self.georef.origin_lon:.10f}")
         x_var = tk.StringVar(value=f"{self.georef.origin_x:.3f}")
         y_var = tk.StringVar(value=f"{self.georef.origin_y:.3f}")
-        epsg_var = tk.StringVar(value=str(self.georef.epsg_code))
+        epsg_var = tk.StringVar(value="" if self.georef.epsg_code is None else str(self.georef.epsg_code))
         lower_left_var = tk.BooleanVar(value=self.ui_lower_left_origin)
         original_ui_lower_left_origin = self.ui_lower_left_origin
 
@@ -4555,7 +4582,7 @@ class PaintApplication(framework.Framework):
             lon_var.set(f"{georef.origin_lon:.10f}")
             x_var.set(f"{georef.origin_x:.3f}")
             y_var.set(f"{georef.origin_y:.3f}")
-            epsg_var.set(str(georef.epsg_code))
+            epsg_var.set("" if georef.epsg_code is None else str(georef.epsg_code))
             status_var.set(f"{georef.epsg_string} - {georef.crs_name}")
             state["suspend"] = False
             update_mode_ui()
@@ -4610,8 +4637,17 @@ class PaintApplication(framework.Framework):
         def submit():
             """Retrieve values and update origin."""
             try:
-                epsg_code = int(epsg_var.get())
-                if auto_conversion_enabled():
+                if not epsg_var.get().strip():
+                    # No EPSG: CRS unknown, the four values are taken as entered
+                    georef = unknown_crs_georeference(
+                        origin_lat=float(lat_var.get()),
+                        origin_lon=float(lon_var.get()),
+                        origin_x=float(x_var.get()),
+                        origin_y=float(y_var.get()),
+                        rotation_angle=self.georef.rotation_angle,
+                    )
+                elif auto_conversion_enabled():
+                    epsg_code = int(epsg_var.get())
                     if state["source"] == "projected":
                         georef = complete_georeference(
                             origin_x=float(x_var.get()),
@@ -4629,6 +4665,7 @@ class PaintApplication(framework.Framework):
                         )
                     georef = snap_georeference_to_grid(georef, self.original_res)
                 else:
+                    epsg_code = int(epsg_var.get())
                     manual_crs_name = (
                         self.georef.crs_name
                         if epsg_code == self.georef.epsg_code
@@ -4647,6 +4684,7 @@ class PaintApplication(framework.Framework):
                         crs_wkt=manual_crs_wkt,
                     )
 
+                georef = keep_crs_variable(georef, self.georef)
                 self._apply_georeference(georef)
                 self.ui_lower_left_origin = bool(lower_left_var.get())
                 self.refresh_coordinate_labels()
@@ -4662,6 +4700,15 @@ class PaintApplication(framework.Framework):
                     f"CRS: {georef.epsg_string}\n"
                     f"Mode: {'automatic' if georef.auto_conversion_enabled else 'manual'}",
                 )
+                missing = missing_palm_crs_attributes(georef)
+                if missing:
+                    tk.messagebox.showwarning(
+                        "Incomplete crs for PALM",
+                        f"PALMPaint cannot build a complete crs variable for {georef.epsg_string}. "
+                        "It will have no " + ", ".join(missing) + ".\n\n"
+                        "PALM reads these attributes and stops with error NCF0524 when one "
+                        "is missing. Add them to the saved file before running PALM.",
+                    )
             except ValueError as exc:
                 tk.messagebox.showerror("Invalid Input", str(exc))
 

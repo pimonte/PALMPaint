@@ -7,14 +7,16 @@ rest of the application only needs a small, stable API.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 
+# Berlin Tiergarten: the example origin of PALM's create_basic_static_driver,
+# also used by PALMPaint for new projects
 DEFAULT_ORIGIN_LAT = 52.50965
 DEFAULT_ORIGIN_LON = 13.3139
 _K0 = 0.9996
@@ -23,6 +25,23 @@ _FALSE_NORTHING_SOUTH = 10000000.0
 _UTM_LAT_MIN = -80.0
 _UTM_LAT_MAX = 84.0
 _AUTO_GERMANY_EPSGS = {25832, 25833}
+
+# Attributes PALM reads from the crs variable when the file has one. A missing
+# attribute stops PALM with error NCF0524 (netcdf_data_input_mod.f90, PALM 25.10.1)
+PALM_CRS_ATTRIBUTES = (
+    "epsg_code",
+    "false_easting",
+    "false_northing",
+    "grid_mapping_name",
+    "inverse_flattening",
+    "latitude_of_projection_origin",
+    "long_name",
+    "longitude_of_central_meridian",
+    "longitude_of_prime_meridian",
+    "scale_factor_at_central_meridian",
+    "semi_major_axis",
+    "units",
+)
 
 
 @dataclass(frozen=True)
@@ -67,7 +86,7 @@ _ELLIPSOIDS = {
 
 @dataclass(frozen=True)
 class GeoReference:
-    epsg_code: int
+    epsg_code: Optional[int]  # None: CRS unknown, the file has no crs variable
     crs_name: str
     utm_zone: Optional[int]
     hemisphere: Optional[str]
@@ -79,9 +98,14 @@ class GeoReference:
     rotation_angle: float = 0.0
     crs_wkt: Optional[str] = None
     projected_crs_name: Optional[str] = None
+    # All attributes of the file's crs variable, written back unchanged on save.
+    # None: no crs variable in the file, PALMPaint builds one from epsg_code.
+    crs_attributes: Optional[Dict[str, Any]] = None
 
     @property
     def epsg_string(self) -> str:
+        if self.epsg_code is None:
+            return "EPSG unknown"
         return f"EPSG:{self.epsg_code}"
 
     def as_origin_tuple(self) -> Tuple[float, float, float, float]:
@@ -226,6 +250,13 @@ def _dataset_crs_wkt(nc_file: Any) -> Optional[str]:
         if value:
             return str(value)
     return None
+
+
+def _dataset_crs_attributes(nc_file: Any) -> Optional[Dict[str, Any]]:
+    if "crs" not in nc_file.variables:
+        return None
+    crs_var = nc_file.variables["crs"]
+    return {name: crs_var.getncattr(name) for name in crs_var.ncattrs()}
 
 
 def _epsg_params(epsg_code: int) -> Dict[str, Any]:
@@ -472,6 +503,173 @@ def manual_georeference(
     )
 
 
+def georeference_as_given(
+    origin_lat: float,
+    origin_lon: float,
+    origin_x: float,
+    origin_y: float,
+    epsg_code: int,
+    rotation_angle: float = 0.0,
+    crs_name: Optional[str] = None,
+    crs_wkt: Optional[str] = None,
+) -> GeoReference:
+    """Keep all four origin values exactly as given, nothing is recalculated."""
+    if not is_auto_conversion_epsg(epsg_code):
+        return manual_georeference(
+            origin_lat, origin_lon, origin_x, origin_y, epsg_code,
+            rotation_angle=rotation_angle, crs_name=crs_name, crs_wkt=crs_wkt,
+        )
+    params = _epsg_params(int(epsg_code))
+    return GeoReference(
+        epsg_code=int(epsg_code),
+        crs_name=params["crs_name"],
+        utm_zone=params["zone"],
+        hemisphere=params["hemisphere"],
+        datum=params["ellipsoid"].datum_name,
+        origin_lat=float(origin_lat),
+        origin_lon=float(origin_lon),
+        origin_x=float(origin_x),
+        origin_y=float(origin_y),
+        rotation_angle=float(rotation_angle),
+        projected_crs_name=params["crs_name"],
+    )
+
+
+def unknown_crs_georeference(
+    origin_lat: float,
+    origin_lon: float,
+    origin_x: float,
+    origin_y: float,
+    rotation_angle: float = 0.0,
+) -> GeoReference:
+    """Origin of a file without a crs variable whose x / y do not match lat / lon.
+
+    The values are kept, and no CRS is written on save.
+    """
+    return GeoReference(
+        epsg_code=None,
+        crs_name="CRS unknown (no crs variable in the file)",
+        utm_zone=None,
+        hemisphere=None,
+        datum="unknown",
+        origin_lat=float(origin_lat),
+        origin_lon=float(origin_lon),
+        origin_x=float(origin_x),
+        origin_y=float(origin_y),
+        rotation_angle=float(rotation_angle),
+    )
+
+
+def origin_mismatch(
+    origin_lat: float, origin_lon: float, origin_x: float, origin_y: float, epsg_code: Optional[int]
+) -> Optional[float]:
+    """Distance in m between origin_x / origin_y and origin_lat / origin_lon in this CRS.
+
+    None when the distance cannot be computed (CRS unknown, not UTM, or outside the
+    UTM latitude range).
+    """
+    if not is_supported_utm_epsg(epsg_code):
+        return None
+    try:
+        x, y = latlon_to_projected(origin_lat, origin_lon, epsg_code)
+    except ValueError:
+        return None
+    return math.hypot(x - origin_x, y - origin_y)
+
+
+def keep_crs_variable(new: GeoReference, old: GeoReference) -> GeoReference:
+    """Carry the crs variable of ``old`` over to ``new`` when both use the same CRS."""
+    if new.epsg_code != old.epsg_code:
+        return new
+    return replace(new, crs_attributes=old.crs_attributes)
+
+
+def _writes_crs_variable(georef: GeoReference) -> bool:
+    return georef.crs_attributes is not None or georef.epsg_code is not None
+
+
+def missing_palm_crs_attributes(georef: GeoReference) -> List[str]:
+    """Attributes PALM needs that the saved crs variable will not have."""
+    if not _writes_crs_variable(georef):
+        return []
+    written = _crs_variable_attributes(georef)
+    return [name for name in PALM_CRS_ATTRIBUTES if name not in written]
+
+
+def uses_default_origin(georef: GeoReference) -> bool:
+    """True when origin_lat / origin_lon is the default Berlin example origin.
+
+    The tolerance of 1e-4 deg (about 10 m) covers values stored as float32.
+    """
+    return (
+        abs(georef.origin_lat - DEFAULT_ORIGIN_LAT) < 1e-4
+        and abs(georef.origin_lon - DEFAULT_ORIGIN_LON) < 1e-4
+    )
+
+
+PALM_ORIGIN_USE = (
+    "PALM uses origin_lat / origin_lon for the Coriolis force and the sun position, "
+    "and origin_x / origin_y only for the output coordinates."
+)
+
+
+def default_origin_note() -> str:
+    return (
+        f"origin_lat / origin_lon is the default example origin {DEFAULT_ORIGIN_LAT} N, "
+        f"{DEFAULT_ORIGIN_LON} E (Berlin Tiergarten), used by PALM's "
+        "create_basic_static_driver and by new PALMPaint projects. If your domain "
+        "is somewhere else, set the real origin with Extras > Change Origin."
+    )
+
+
+def georeference_warning(georef: GeoReference, tolerance: float) -> Optional[str]:
+    """Warning text about the origin and the CRS of a loaded file, or None if all fits."""
+    messages = []
+    explain_origin = False
+    if uses_default_origin(georef):
+        messages.append(default_origin_note())
+        explain_origin = True
+    if georef.epsg_code is None:
+        saved_crs = (
+            "The crs variable of the file is kept unchanged."
+            if georef.crs_attributes is not None
+            else "No crs variable is written on save."
+        )
+        messages.append(
+            "PALMPaint found no EPSG code in the file, and origin_x / origin_y are not "
+            "the UTM coordinates of origin_lat / origin_lon. The coordinate system is "
+            f"unknown. PALMPaint keeps all four values unchanged. {saved_crs}"
+        )
+        explain_origin = True
+    elif not is_supported_utm_epsg(georef.epsg_code):
+        messages.append(
+            f"The file uses {georef.epsg_string} ({georef.crs_name}). PALMPaint keeps the "
+            "crs variable and the origin unchanged, but it can only convert UTM "
+            "coordinates. It cannot check whether origin_x / origin_y and origin_lat / "
+            "origin_lon describe the same point, and it cannot convert between them."
+        )
+    else:
+        distance = origin_mismatch(
+            georef.origin_lat, georef.origin_lon, georef.origin_x, georef.origin_y, georef.epsg_code
+        )
+        if distance is not None and distance > tolerance:
+            messages.append(
+                f"origin_x / origin_y and origin_lat / origin_lon are {distance:.0f} m apart "
+                f"in {georef.epsg_string}. PALMPaint keeps all four values unchanged."
+            )
+            explain_origin = True
+    if explain_origin:
+        messages.append(PALM_ORIGIN_USE)
+    missing = missing_palm_crs_attributes(georef)
+    if missing:
+        messages.append(
+            "The crs variable has no " + ", ".join(missing) + ". PALM reads these "
+            "attributes and stops with error NCF0524 when one is missing. Add them "
+            "before running PALM."
+        )
+    return "\n\n".join(messages) or None
+
+
 def complete_georeference(
     origin_lat: Optional[float] = None,
     origin_lon: Optional[float] = None,
@@ -569,29 +767,54 @@ def ensure_georeference(
     )
 
 
-def load_georeference(nc_file: Any) -> GeoReference:
+def load_georeference(nc_file: Any, tolerance: float = 1.0) -> GeoReference:
+    """Read the origin and the CRS of a static driver.
+
+    PALM uses the four origin attributes as they are, so values found in the file
+    are never recalculated. Only missing values are filled in. The crs variable is
+    kept with all its attributes and written back unchanged on save. Without a crs
+    variable the UTM zone of origin_lat / origin_lon is used as CRS if origin_x /
+    origin_y match it within ``tolerance`` m, otherwise the CRS stays unknown.
+    """
+    georef = _origin_from_dataset(nc_file, tolerance)
+    crs_attributes = _dataset_crs_attributes(nc_file)
+    # Only keep the crs variable if it belongs to this origin, not to a default
+    if crs_attributes is None or georef.epsg_code != detect_dataset_epsg(nc_file):
+        return georef
+    return replace(georef, crs_attributes=crs_attributes)
+
+
+def _origin_from_dataset(nc_file: Any, tolerance: float) -> GeoReference:
     origin_lat = getattr(nc_file, "origin_lat", None)
     origin_lon = getattr(nc_file, "origin_lon", None)
     origin_x = getattr(nc_file, "origin_x", None)
     origin_y = getattr(nc_file, "origin_y", None)
     rotation_angle = float(getattr(nc_file, "rotation_angle", 0.0))
 
-    epsg_code = detect_dataset_epsg(nc_file)
-    crs_name = _dataset_crs_name(nc_file)
-    crs_wkt = _dataset_crs_wkt(nc_file)
-    if epsg_code is None and origin_lat is not None and origin_lon is not None:
-        epsg_code = suggest_utm_epsg(origin_lat, origin_lon)
-
     if origin_lat is None and origin_lon is None and origin_x is None and origin_y is None:
         return default_georeference()
 
-    prefer_projected = bool(
-        epsg_code is not None
-        and origin_x is not None
-        and origin_y is not None
-        and _looks_like_utm_coordinates(origin_x, origin_y)
-    )
+    epsg_code = detect_dataset_epsg(nc_file)
+    crs_name = _dataset_crs_name(nc_file)
+    crs_wkt = _dataset_crs_wkt(nc_file)
 
+    if None not in (origin_lat, origin_lon, origin_x, origin_y):
+        if epsg_code is None:
+            guess = suggest_utm_epsg(origin_lat, origin_lon)
+            distance = origin_mismatch(origin_lat, origin_lon, origin_x, origin_y, guess)
+            if distance is None or distance > tolerance:
+                return unknown_crs_georeference(
+                    origin_lat, origin_lon, origin_x, origin_y, rotation_angle
+                )
+            epsg_code = guess
+        return georeference_as_given(
+            origin_lat, origin_lon, origin_x, origin_y, epsg_code,
+            rotation_angle=rotation_angle, crs_name=crs_name, crs_wkt=crs_wkt,
+        )
+
+    # Some values are missing: calculate them from the complete pair
+    if epsg_code is None and origin_lat is not None and origin_lon is not None:
+        epsg_code = suggest_utm_epsg(origin_lat, origin_lon)
     return complete_georeference(
         origin_lat=origin_lat,
         origin_lon=origin_lon,
@@ -599,7 +822,6 @@ def load_georeference(nc_file: Any) -> GeoReference:
         origin_y=origin_y,
         epsg_code=epsg_code,
         rotation_angle=rotation_angle,
-        prefer_projected=prefer_projected,
         allow_manual=True,
         crs_name=crs_name,
         crs_wkt=crs_wkt,
@@ -633,7 +855,9 @@ def generate_coordinate_fields(
 
 
 def _crs_variable_attributes(georef: GeoReference) -> Dict[str, Any]:
-    if not georef.auto_conversion_enabled:
+    if georef.crs_attributes is not None:
+        return dict(georef.crs_attributes)
+    if not is_supported_utm_epsg(georef.epsg_code):
         attrs = {
             "long_name": "coordinate reference system",
             "projected_crs_name": georef.projected_crs_name or georef.crs_name,
@@ -646,17 +870,20 @@ def _crs_variable_attributes(georef: GeoReference) -> Dict[str, Any]:
 
     params = _epsg_params(georef.epsg_code)
     ellipsoid = params["ellipsoid"]
-    central_meridian = georef.utm_zone * 6.0 - 183.0
-    false_northing = 0.0 if georef.hemisphere == "N" else _FALSE_NORTHING_SOUTH
+    zone = params["zone"]
+    hemisphere = params["hemisphere"]
+    crs_name = params["crs_name"]
+    central_meridian = zone * 6.0 - 183.0
+    false_northing = 0.0 if hemisphere == "N" else _FALSE_NORTHING_SOUTH
 
     crs_wkt = (
-        f'PROJCRS["{georef.crs_name}",'
+        f'PROJCRS["{crs_name}",'
         f'BASEGEOGCRS["{ellipsoid.geographic_crs_name}",'
         f'DATUM["{ellipsoid.datum_name}",'
         f'ELLIPSOID["{ellipsoid.ellipsoid_name}",{ellipsoid.semi_major_axis},'
         f'{ellipsoid.inverse_flattening},LENGTHUNIT["metre",1]]],'
         'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],'
-        f'CONVERSION["UTM zone {georef.utm_zone}{georef.hemisphere}",'
+        f'CONVERSION["UTM zone {zone}{hemisphere}",'
         'METHOD["Transverse Mercator",ID["EPSG",9807]],'
         'PARAMETER["Latitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433],'
         'ID["EPSG",8801]],'
@@ -683,7 +910,7 @@ def _crs_variable_attributes(georef: GeoReference) -> Dict[str, Any]:
         "prime_meridian_name": "Greenwich",
         "geographic_crs_name": ellipsoid.geographic_crs_name,
         "horizontal_datum_name": ellipsoid.datum_name,
-        "projected_crs_name": georef.crs_name,
+        "projected_crs_name": crs_name,
         "grid_mapping_name": "transverse_mercator",
         "latitude_of_projection_origin": 0.0,
         "longitude_of_central_meridian": central_meridian,
@@ -698,7 +925,8 @@ def _crs_variable_attributes(georef: GeoReference) -> Dict[str, Any]:
 def add_grid_mapping(variable: Any, coordinates: str = "E_UTM N_UTM lon lat") -> None:
     if coordinates:
         variable.coordinates = coordinates
-    variable.grid_mapping = "crs"
+    if "crs" in variable.group().variables:
+        variable.grid_mapping = "crs"
 
 
 def coordinate_attribute_names(georef: GeoReference) -> Optional[str]:
@@ -735,9 +963,11 @@ def write_georeference(nc_file: Any, nx: int, ny: int, res: float, georef: GeoRe
         n_var.standard_name = "projection_y_coordinate"
         n_var[:, :] = n_utm
 
-    crs = nc_file.createVariable("crs", "i4")
-    for attr_name, attr_value in _crs_variable_attributes(georef).items():
-        setattr(crs, attr_name, attr_value)
+    if _writes_crs_variable(georef):
+        crs = nc_file.createVariable("crs", "i4")
+        for attr_name, attr_value in _crs_variable_attributes(georef).items():
+            if attr_name != "_FillValue":  # can only be set when the variable is created
+                setattr(crs, attr_name, attr_value)
 
     nc_file.origin_lat = georef.origin_lat
     nc_file.origin_lon = georef.origin_lon

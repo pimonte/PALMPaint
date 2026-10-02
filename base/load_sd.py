@@ -126,14 +126,17 @@ def LoadModel(filename="output.nc", surface_config=None):
         # Get dimensions
         nx = len(nc_file.dimensions["x"])
         ny = len(nc_file.dimensions["y"])
-        georef = load_georeference(nc_file)
-        ori = georef.as_origin_tuple()
 
         # Determine horizontal resolution from the x coordinate variable.
         # The x values are defined as: np.arange(0, nx*dx, dx) + 0.5*dx in create_sd.py
         # so x[0] = 0.5*dx → dx = 2*x[0] for single-cell grids.
         x = nc_file.variables["x"][:]
         res = float(x[1] - x[0]) if nx > 1 else float(2 * x[0])
+
+        # origin_x / origin_y and origin_lat / origin_lon count as the same point
+        # when they are less than one grid cell apart
+        georef = load_georeference(nc_file, tolerance=max(res, 1.0))
+        ori = georef.as_origin_tuple()
 
         z_coords = None
         if "buildings_3d" in nc_file.variables and "z" in nc_file.variables:
