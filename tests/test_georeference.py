@@ -9,6 +9,12 @@ import netCDF4
 import pytest
 
 import base.surface_config as surface_config
+from base.geo_reference import (
+    georeference_as_given,
+    projected_to_latlon,
+    shifted_georeference,
+    unknown_crs_georeference,
+)
 from base.load_sd import LoadModel
 from test_roundtrip import save_and_load
 
@@ -117,3 +123,24 @@ def test_crs_variable_is_kept_on_save(tmp_path, origin, crs):
     with netCDF4.Dataset(saved) as nc_file:
         crs_var = nc_file.variables["crs"]
         assert {name: crs_var.getncattr(name) for name in crs_var.ncattrs()} == crs
+
+
+def test_border_and_crop_move_the_origin():
+    # Add Border with 3 cells west and 2 south at 10 m: the corner moves 30 m / 20 m
+    georef = georeference_as_given(*CONSISTENT_UTM, epsg_code=25832)
+    moved, warning = shifted_georeference(georef, dx=-30.0, dy=-20.0)
+
+    assert warning is None
+    assert (moved.origin_x, moved.origin_y) == (531874.0, 5787384.0)
+    lon, lat = projected_to_latlon(moved.origin_x, moved.origin_y, 25832)
+    # 1e-6 deg is about 0.1 m, lat / lon are shifted, not recalculated
+    assert (moved.origin_lat, moved.origin_lon) == pytest.approx((lat, lon), abs=1e-6)
+
+
+def test_origin_move_without_utm_keeps_lat_lon_and_warns():
+    georef = unknown_crs_georeference(*SWISS_LV03)
+    moved, warning = shifted_georeference(georef, dx=64.0, dy=32.0)
+
+    assert (moved.origin_x, moved.origin_y) == (533132.0, 175490.0)
+    assert (moved.origin_lat, moved.origin_lon) == (SWISS_LV03[0], SWISS_LV03[1])
+    assert warning is not None

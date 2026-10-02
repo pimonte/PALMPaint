@@ -170,8 +170,19 @@ def test_save_load_keeps_all_layers(model, tmp_path):
 
 def test_pad_then_crop_keeps_all_layers(model):
     padded = model.padded(n_north=2, n_south=1, n_west=3, n_east=0)
-    cropped = padded.cropped(col_start=3, row_start=2, new_nx=model.nx, new_ny=model.ny)
+    cropped = padded.cropped(col_start=3, row_start=1, new_nx=model.nx, new_ny=model.ny)
     assert_same_layers(model, cropped)
+
+
+def test_border_sides_match_the_compass(model):
+    # Row 0 is the southern edge (PALM's y index 0), column 0 the western edge.
+    # North and east borders are appended, so the building keeps its index.
+    padded = model.padded(n_north=2, n_south=0, n_west=0, n_east=3)
+    assert padded.building_id[BUILDING_CELL] == 7
+    # South and west borders come first, so the building moves by them
+    padded = model.padded(n_north=0, n_south=2, n_west=3, n_east=0)
+    r, c = BUILDING_CELL
+    assert padded.building_id[r + 2, c + 3] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +194,8 @@ def test_pad_then_crop_keeps_all_layers(model):
 def test_border_and_crop_work_with_placed_trees(model_with_tree, operation):
     # Different offsets for rows and columns, so a row/column mix-up is caught
     if operation == "pad":
-        result = model_with_tree.padded(n_north=2, n_south=0, n_west=1, n_east=0)
+        # n_north differs from n_south, so a north / south mix-up is caught
+        result = model_with_tree.padded(n_north=3, n_south=2, n_west=1, n_east=0)
         expected_cell = (TREE_CELL[0] + 2, TREE_CELL[1] + 1)
     else:
         result = model_with_tree.cropped(col_start=1, row_start=1, new_nx=10, new_ny=8)

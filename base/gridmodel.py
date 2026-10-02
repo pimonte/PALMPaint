@@ -580,13 +580,14 @@ class GridModel:
         """Return a new GridModel with padding added on each side.
 
         New border cells receive the same default fill as a freshly created grid.
-        n_north / n_south add rows at the canvas top (north) / bottom (south).
-        n_west / n_east add columns at the canvas left (west) / right (east).
+        Row 0 is the southern edge (PALM's y index 0), so n_south adds rows
+        before row 0 and n_north after the last row. n_west / n_east add
+        columns before column 0 / after the last column.
         """
         new_nx = self.nx + n_west + n_east
         new_ny = self.ny + n_north + n_south
         new = GridModel(new_nx, new_ny, self.res, self.dz, self.surface_config)
-        r = slice(n_north, n_north + self.ny)
+        r = slice(n_south, n_south + self.ny)
         c = slice(n_west,  n_west  + self.nx)
         new.zt[r, c]              = self.zt
         new.vegetation_type[r, c] = self.vegetation_type
@@ -614,7 +615,7 @@ class GridModel:
         new.tree_instances = copy.deepcopy(self.tree_instances)
         for t in new.tree_instances:
             t["col"] += n_west
-            t["row"] += n_north
+            t["row"] += n_south
         new.next_tree_id = self.next_tree_id
         return new
 
@@ -622,7 +623,7 @@ class GridModel:
         """Return a new GridModel sliced to the given sub-domain.
 
         Parameters use array coordinates: col_start / row_start are 0-based
-        indices where row 0 is the northern (top) edge of the canvas.
+        indices where row 0 is the southern edge (PALM's y index 0).
         """
         new = GridModel(new_nx, new_ny, self.res, self.dz, self.surface_config)
         r = slice(row_start, row_start + new_ny)

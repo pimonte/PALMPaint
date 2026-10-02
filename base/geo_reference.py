@@ -671,6 +671,43 @@ def georeference_warning(georef: GeoReference, tolerance: float) -> Optional[str
     return "\n\n".join(messages) or None
 
 
+def shifted_georeference(
+    georef: GeoReference, dx: float, dy: float
+) -> Tuple[GeoReference, Optional[str]]:
+    """Move the origin by dx / dy m to the east / north, for Add Border and Crop.
+
+    Returns the new GeoReference and a warning text (or None). origin_x /
+    origin_y move by dx / dy. In a UTM CRS origin_lat / origin_lon move by the
+    same distance, as a difference, so values the author set stay as they are
+    apart from the shift. origin_z and the crs variable are kept.
+    """
+    if dx == 0 and dy == 0:
+        return georef, None
+    if georef.rotation_angle != 0:
+        return georef, (
+            f"The domain is rotated by {georef.rotation_angle} deg. PALMPaint does not "
+            "move a rotated origin, so the origin still points to the old lower-left "
+            "corner. Set it with Extras > Change Origin."
+        )
+    new_x = georef.origin_x + dx
+    new_y = georef.origin_y + dy
+    if is_supported_utm_epsg(georef.epsg_code):
+        old_lon, old_lat = projected_to_latlon(georef.origin_x, georef.origin_y, georef.epsg_code)
+        new_lon, new_lat = projected_to_latlon(new_x, new_y, georef.epsg_code)
+        return replace(
+            georef,
+            origin_x=new_x,
+            origin_y=new_y,
+            origin_lat=georef.origin_lat + (new_lat - old_lat),
+            origin_lon=georef.origin_lon + (new_lon - old_lon),
+        ), None
+    return replace(georef, origin_x=new_x, origin_y=new_y), (
+        f"origin_x / origin_y moved by {dx:g} m / {dy:g} m. PALMPaint cannot convert "
+        f"coordinates in this CRS ({georef.epsg_string}), so origin_lat / origin_lon "
+        "still point to the old lower-left corner. Set them with Extras > Change Origin."
+    )
+
+
 def complete_georeference(
     origin_lat: Optional[float] = None,
     origin_lon: Optional[float] = None,

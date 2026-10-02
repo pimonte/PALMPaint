@@ -69,6 +69,7 @@ from base.geo_reference import (
     georeference_warning,
     keep_crs_variable,
     missing_palm_crs_attributes,
+    shifted_georeference,
     snap_georeference_to_grid,
     unknown_crs_georeference,
     uses_default_origin,
@@ -1904,31 +1905,33 @@ class PaintApplication(framework.Framework):
                 pixel_data, water_temp = self._get_current_tool_pixel_data()
                 new_nx = new_model.nx
                 new_ny = new_model.ny
-                # North strip
-                for r in range(n):
+                # Row 0 is the southern edge
+                # South strip
+                for r in range(s):
                     for c in range(new_nx):
                         new_model.set_pixel(r, c, **pixel_data)
                         if water_temp is not None:
                             new_model.set_water_parameter(0, r, c, water_temp)
-                # South strip
-                for r in range(new_ny - s, new_ny):
+                # North strip
+                for r in range(new_ny - n, new_ny):
                     for c in range(new_nx):
                         new_model.set_pixel(r, c, **pixel_data)
                         if water_temp is not None:
                             new_model.set_water_parameter(0, r, c, water_temp)
                 # West strip (excluding corners already covered above)
-                for r in range(n, new_ny - s):
+                for r in range(s, new_ny - n):
                     for c in range(w):
                         new_model.set_pixel(r, c, **pixel_data)
                         if water_temp is not None:
                             new_model.set_water_parameter(0, r, c, water_temp)
                 # East strip (excluding corners already covered above)
-                for r in range(n, new_ny - s):
+                for r in range(s, new_ny - n):
                     for c in range(new_nx - e, new_nx):
                         new_model.set_pixel(r, c, **pixel_data)
                         if water_temp is not None:
                             new_model.set_water_parameter(0, r, c, water_temp)
-            self._apply_grid_transform(new_model)
+            # The lower-left corner moves by the west and south border
+            self._apply_grid_transform(new_model, dx=-w * res, dy=-s * res)
 
         btn_frame = tk.Frame(dialog)
         btn_frame.grid(row=5, column=0, columnspan=4, pady=8)
@@ -2014,9 +2017,8 @@ class PaintApplication(framework.Framework):
                 y1  = round(_to_cells(ty1_var))
                 cnx = x1 - x0 + 1
                 cny = y1 - y0 + 1
-            col_start = x0
-            row_start = ny - y0 - cny   # PALM y-from-south → array row
-            return col_start, row_start, cnx, cny
+            # PALM x / y count from the west / south edge, like the model columns / rows
+            return x0, y0, cnx, cny
 
         def update_preview(*_):
             try:
@@ -2096,9 +2098,9 @@ class PaintApplication(framework.Framework):
                 col_max = max(c1, c2)
                 row_min = min(r1, r2)
                 row_max = max(r1, r2)
-                # Convert to PALM coords (y from south)
+                # Model rows count from the south like PALM's y
                 x0_palm = col_min
-                y0_palm = ny - 1 - row_max
+                y0_palm = row_min
                 cnx = col_max - col_min + 1
                 cny = row_max - row_min + 1
                 scale = res if unit_var.get() == "meters" else 1.0
@@ -2139,7 +2141,11 @@ class PaintApplication(framework.Framework):
                 dialog.destroy()
                 return
             dialog.destroy()
-            self._apply_grid_transform(self.model.cropped(col_start, row_start, cnx, cny))
+            self._apply_grid_transform(
+                self.model.cropped(col_start, row_start, cnx, cny),
+                dx=col_start * res,
+                dy=row_start * res,
+            )
 
         btn_frame = tk.Frame(dialog)
         btn_frame.grid(row=5, column=0, columnspan=4, pady=8)
@@ -2706,8 +2712,14 @@ class PaintApplication(framework.Framework):
             return  # User cancelled
         self.load_project_netcdf_from_path(file_path)
     
+    def _snapshot(self):
+        """Model snapshot for undo / redo, with the origin, which Add Border and Crop move."""
+        state = self.model.export_state()
+        state["georef"] = self.georef
+        return state
+
     def save_state(self):
-        self.undo_stack.append(self.model.export_state())
+        self.undo_stack.append(self._snapshot())
         # Drop the oldest snapshots, but always keep the newest one.
         snapshot_bytes = gridmodel.GridModel.state_nbytes(self.undo_stack[-1])
         while (len(self.undo_stack) > 1
@@ -2728,6 +2740,10 @@ class PaintApplication(framework.Framework):
     def _restore_model_from_state(self, state, xview, yview):
         """Shared logic for undo/redo: restore model and redraw, handling dimension changes."""
         self.model = gridmodel.GridModel.from_state(state)
+        georef = state.get("georef")
+        if georef is not None and georef is not self.georef:
+            self._apply_georeference(georef)
+            self.refresh_coordinate_labels()
         self.backend.model = self.model
         self._apply_editor_state_to_backend()
         dims_changed = (self.model.nx != self.nx or self.model.ny != self.ny)
@@ -2749,7 +2765,7 @@ class PaintApplication(framework.Framework):
         if self.undo_stack:
             xview, yview = self._capture_canvas_view()
             state = self.undo_stack.pop()
-            self.redo_stack.append(self.model.export_state())
+            self.redo_stack.append(self._snapshot())
             self._restore_model_from_state(state, xview, yview)
         else:
             print("Nothing to undo.")
@@ -2758,7 +2774,7 @@ class PaintApplication(framework.Framework):
         if self.redo_stack:
             xview, yview = self._capture_canvas_view()
             state = self.redo_stack.pop()
-            self.undo_stack.append(self.model.export_state())
+            self.undo_stack.append(self._snapshot())
             self._restore_model_from_state(state, xview, yview)
         else:
             print("Nothing to redo.")
@@ -2909,9 +2925,16 @@ class PaintApplication(framework.Framework):
         self.backend.update_grid(nx, ny, res)
         self.backend.show_selection(self.editor_state.selection_cells)
 
-    def _apply_grid_transform(self, new_model):
-        """Swap in a resized model and fully redraw. Saves current state for undo."""
+    def _apply_grid_transform(self, new_model, dx=0.0, dy=0.0):
+        """Swap in a resized model and fully redraw. Saves current state for undo.
+
+        dx / dy: how far the lower-left corner moves in m (east / north).
+        """
         self.save_state()
+        georef, georef_warning = shifted_georeference(self.georef, dx, dy)
+        if georef is not self.georef:
+            self._apply_georeference(georef)
+            self.refresh_coordinate_labels()
         self.model = new_model
         self.nx = new_model.nx
         self.ny = new_model.ny
@@ -2924,6 +2947,8 @@ class PaintApplication(framework.Framework):
         self.backend.set_grid_lines_visible(self.show_grid_lines)
         self.refresh_project_info_labels()
         self.dirty = True
+        if georef_warning:
+            messagebox.showwarning("Origin", georef_warning)
                 
                 
         
@@ -3077,7 +3102,8 @@ class PaintApplication(framework.Framework):
 
     def show_current_coordinates(self, row, col):
         """Update the current coordinate label based on mouse movement."""
-        display_row = self.ny - row - 1 if self.ui_lower_left_origin else row
+        # Model row 0 is the southern edge
+        display_row = row if self.ui_lower_left_origin else self.ny - row - 1
         coordinate_string = "nx:{0}\nny:{1}".format(col, display_row)
         self.current_coordinate_label.config(text=coordinate_string)
         
@@ -3089,11 +3115,12 @@ class PaintApplication(framework.Framework):
     def show_meter_coordinates(self, row, col):
         """Update the meter coordinate label based on mouse movement."""
         if self.ui_lower_left_origin:
+            # Model row 0 is the southern edge, like origin_y
             meter_x = self.georef.origin_x + (col + 0.5) * self.original_res
-            meter_y = self.georef.origin_y + (self.ny - row - 0.5) * self.original_res
+            meter_y = self.georef.origin_y + (row + 0.5) * self.original_res
         else:
             meter_x = (col + 0.5) * self.original_res
-            meter_y = (row + 0.5) * self.original_res
+            meter_y = (self.ny - row - 0.5) * self.original_res
         coordinate_string = "x:{:.2f}\ny:{:.2f}".format(meter_x, meter_y)
         self.meter_coordinate_label.config(text=coordinate_string)
 
@@ -4480,12 +4507,28 @@ class PaintApplication(framework.Framework):
 
         status_var = tk.StringVar(value=f"{self.georef.epsg_string} - {self.georef.crs_name}")
         mode_var = tk.StringVar()
-        lat_var = tk.StringVar(value=f"{self.georef.origin_lat:.10f}")
-        lon_var = tk.StringVar(value=f"{self.georef.origin_lon:.10f}")
-        x_var = tk.StringVar(value=f"{self.georef.origin_x:.3f}")
-        y_var = tk.StringVar(value=f"{self.georef.origin_y:.3f}")
+        # Shown to the cm: 7 decimals for lat / lon, 2 for metres. The full
+        # values are kept, a field only counts when the user edits it.
+        lat_var = tk.StringVar(value=f"{self.georef.origin_lat:.7f}")
+        lon_var = tk.StringVar(value=f"{self.georef.origin_lon:.7f}")
+        x_var = tk.StringVar(value=f"{self.georef.origin_x:.2f}")
+        y_var = tk.StringVar(value=f"{self.georef.origin_y:.2f}")
         z_var = tk.StringVar(value=f"{self.georef.origin_z:.2f}")
         epsg_var = tk.StringVar(value="" if self.georef.epsg_code is None else str(self.georef.epsg_code))
+        shown = {
+            "lat": (lat_var.get(), self.georef.origin_lat),
+            "lon": (lon_var.get(), self.georef.origin_lon),
+            "x": (x_var.get(), self.georef.origin_x),
+            "y": (y_var.get(), self.georef.origin_y),
+            "z": (z_var.get(), self.georef.origin_z),
+            "epsg": (epsg_var.get(), self.georef.epsg_code),
+        }
+
+        def field_value(key, variable):
+            """The typed number, or the full original value if the field was not edited."""
+            text = variable.get().strip()
+            initial_text, original = shown[key]
+            return original if text == initial_text else float(text)
         lower_left_var = tk.BooleanVar(value=self.ui_lower_left_origin)
         original_ui_lower_left_origin = self.ui_lower_left_origin
 
@@ -4579,10 +4622,10 @@ class PaintApplication(framework.Framework):
 
         def set_fields(georef):
             state["suspend"] = True
-            lat_var.set(f"{georef.origin_lat:.10f}")
-            lon_var.set(f"{georef.origin_lon:.10f}")
-            x_var.set(f"{georef.origin_x:.3f}")
-            y_var.set(f"{georef.origin_y:.3f}")
+            lat_var.set(f"{georef.origin_lat:.7f}")
+            lon_var.set(f"{georef.origin_lon:.7f}")
+            x_var.set(f"{georef.origin_x:.2f}")
+            y_var.set(f"{georef.origin_y:.2f}")
             epsg_var.set("" if georef.epsg_code is None else str(georef.epsg_code))
             status_var.set(f"{georef.epsg_string} - {georef.crs_name}")
             state["suspend"] = False
@@ -4591,8 +4634,8 @@ class PaintApplication(framework.Framework):
         def recalc_from_latlon():
             try:
                 georef = snap_georeference_to_grid(complete_georeference(
-                    origin_lat=float(lat_var.get()),
-                    origin_lon=float(lon_var.get()),
+                    origin_lat=field_value("lat", lat_var),
+                    origin_lon=field_value("lon", lon_var),
                     epsg_code=int(epsg_var.get()),
                     rotation_angle=self.georef.rotation_angle,
                 ), self.original_res)
@@ -4605,8 +4648,8 @@ class PaintApplication(framework.Framework):
         def recalc_from_projected():
             try:
                 georef = snap_georeference_to_grid(complete_georeference(
-                    origin_x=float(x_var.get()),
-                    origin_y=float(y_var.get()),
+                    origin_x=field_value("x", x_var),
+                    origin_y=field_value("y", y_var),
                     epsg_code=int(epsg_var.get()),
                     rotation_angle=self.georef.rotation_angle,
                     prefer_projected=True,
@@ -4638,29 +4681,37 @@ class PaintApplication(framework.Framework):
         def submit():
             """Retrieve values and update origin."""
             try:
-                if not epsg_var.get().strip():
+                position_edited = any(
+                    variable.get().strip() != shown[key][0]
+                    for key, variable in (("lat", lat_var), ("lon", lon_var), ("x", x_var),
+                                          ("y", y_var), ("epsg", epsg_var))
+                )
+                if not position_edited:
+                    # Nothing typed in the position fields: keep the origin exactly as it is
+                    georef = self.georef
+                elif not epsg_var.get().strip():
                     # No EPSG: CRS unknown, the four values are taken as entered
                     georef = unknown_crs_georeference(
-                        origin_lat=float(lat_var.get()),
-                        origin_lon=float(lon_var.get()),
-                        origin_x=float(x_var.get()),
-                        origin_y=float(y_var.get()),
+                        origin_lat=field_value("lat", lat_var),
+                        origin_lon=field_value("lon", lon_var),
+                        origin_x=field_value("x", x_var),
+                        origin_y=field_value("y", y_var),
                         rotation_angle=self.georef.rotation_angle,
                     )
                 elif auto_conversion_enabled():
                     epsg_code = int(epsg_var.get())
                     if state["source"] == "projected":
                         georef = complete_georeference(
-                            origin_x=float(x_var.get()),
-                            origin_y=float(y_var.get()),
+                            origin_x=field_value("x", x_var),
+                            origin_y=field_value("y", y_var),
                             epsg_code=epsg_code,
                             rotation_angle=self.georef.rotation_angle,
                             prefer_projected=True,
                         )
                     else:
                         georef = complete_georeference(
-                            origin_lat=float(lat_var.get()),
-                            origin_lon=float(lon_var.get()),
+                            origin_lat=field_value("lat", lat_var),
+                            origin_lon=field_value("lon", lon_var),
                             epsg_code=epsg_code,
                             rotation_angle=self.georef.rotation_angle,
                         )
@@ -4674,10 +4725,10 @@ class PaintApplication(framework.Framework):
                     )
                     manual_crs_wkt = self.georef.crs_wkt if epsg_code == self.georef.epsg_code else None
                     georef = complete_georeference(
-                        origin_lat=float(lat_var.get()),
-                        origin_lon=float(lon_var.get()),
-                        origin_x=float(x_var.get()),
-                        origin_y=float(y_var.get()),
+                        origin_lat=field_value("lat", lat_var),
+                        origin_lon=field_value("lon", lon_var),
+                        origin_x=field_value("x", x_var),
+                        origin_y=field_value("y", y_var),
                         epsg_code=epsg_code,
                         rotation_angle=self.georef.rotation_angle,
                         allow_manual=True,
@@ -4686,7 +4737,8 @@ class PaintApplication(framework.Framework):
                     )
 
                 georef = keep_crs_variable(georef, self.georef)
-                georef = replace(georef, origin_z=float(z_var.get()))
+                georef = replace(georef, origin_z=field_value("z", z_var))
+                self.save_state()
                 self._apply_georeference(georef)
                 self.ui_lower_left_origin = bool(lower_left_var.get())
                 self.refresh_coordinate_labels()
@@ -4695,8 +4747,8 @@ class PaintApplication(framework.Framework):
 
                 tk.messagebox.showinfo(
                     "Origin Updated",
-                    f"New Origin Set:\nLatitude: {georef.origin_lat:.6f}°N\n"
-                    f"Longitude: {georef.origin_lon:.6f}°E\n"
+                    f"New Origin Set:\nLatitude: {georef.origin_lat:.7f}°N\n"
+                    f"Longitude: {georef.origin_lon:.7f}°E\n"
                     f"Projected X: {georef.origin_x:.2f} m\n"
                     f"Projected Y: {georef.origin_y:.2f} m\n"
                     f"Origin z: {georef.origin_z:.2f} m\n"
