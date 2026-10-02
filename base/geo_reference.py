@@ -95,6 +95,7 @@ class GeoReference:
     origin_lon: float
     origin_x: float
     origin_y: float
+    origin_z: float = 0.0
     rotation_angle: float = 0.0
     crs_wkt: Optional[str] = None
     projected_crs_name: Optional[str] = None
@@ -777,6 +778,7 @@ def load_georeference(nc_file: Any, tolerance: float = 1.0) -> GeoReference:
     origin_y match it within ``tolerance`` m, otherwise the CRS stays unknown.
     """
     georef = _origin_from_dataset(nc_file, tolerance)
+    georef = replace(georef, origin_z=float(getattr(nc_file, "origin_z", 0.0)))
     crs_attributes = _dataset_crs_attributes(nc_file)
     # Only keep the crs variable if it belongs to this origin, not to a default
     if crs_attributes is None or georef.epsg_code != detect_dataset_epsg(nc_file):
@@ -973,5 +975,5 @@ def write_georeference(nc_file: Any, nx: int, ny: int, res: float, georef: GeoRe
     nc_file.origin_lon = georef.origin_lon
     nc_file.origin_x = georef.origin_x
     nc_file.origin_y = georef.origin_y
-    nc_file.origin_z = 0.0
+    nc_file.origin_z = georef.origin_z
     nc_file.rotation_angle = georef.rotation_angle

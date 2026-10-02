@@ -19,7 +19,9 @@ simple SDs for PALM.
 """
 
 import argparse
+from dataclasses import replace
 import math
+import numpy as np
 import os
 import threading
 import time
@@ -27,7 +29,6 @@ import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
 import tkinter.messagebox as messagebox
-import numpy as np
 
 import base.building_config as building_config
 import base.report as report
@@ -74,8 +75,6 @@ from base.geo_reference import (
 )
 import base.surface_config as surface_config
 import base.welcome_screen as welcome_screen
-
-
 
 
 # Surface tools that support rectangle / line draw modes.
@@ -4476,7 +4475,7 @@ class PaintApplication(framework.Framework):
         """Edit origin coordinates using the dedicated georeference module."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Origin")
-        dialog.geometry("430x390")
+        dialog.geometry("430x420")
         dialog.resizable(False, False)
 
         status_var = tk.StringVar(value=f"{self.georef.epsg_string} - {self.georef.crs_name}")
@@ -4485,6 +4484,7 @@ class PaintApplication(framework.Framework):
         lon_var = tk.StringVar(value=f"{self.georef.origin_lon:.10f}")
         x_var = tk.StringVar(value=f"{self.georef.origin_x:.3f}")
         y_var = tk.StringVar(value=f"{self.georef.origin_y:.3f}")
+        z_var = tk.StringVar(value=f"{self.georef.origin_z:.2f}")
         epsg_var = tk.StringVar(value="" if self.georef.epsg_code is None else str(self.georef.epsg_code))
         lower_left_var = tk.BooleanVar(value=self.ui_lower_left_origin)
         original_ui_lower_left_origin = self.ui_lower_left_origin
@@ -4500,6 +4500,7 @@ class PaintApplication(framework.Framework):
             ("Longitude (deg):", lon_var),
             ("Projected X (m):", x_var),
             ("Projected Y (m):", y_var),
+            ("Origin z (m above sea level):", z_var),
             ("EPSG:", epsg_var),
         ):
             tk.Label(frame, text=label, anchor="w").grid(row=row, column=0, sticky="w", pady=2)
@@ -4685,6 +4686,7 @@ class PaintApplication(framework.Framework):
                     )
 
                 georef = keep_crs_variable(georef, self.georef)
+                georef = replace(georef, origin_z=float(z_var.get()))
                 self._apply_georeference(georef)
                 self.ui_lower_left_origin = bool(lower_left_var.get())
                 self.refresh_coordinate_labels()
@@ -4697,6 +4699,7 @@ class PaintApplication(framework.Framework):
                     f"Longitude: {georef.origin_lon:.6f}°E\n"
                     f"Projected X: {georef.origin_x:.2f} m\n"
                     f"Projected Y: {georef.origin_y:.2f} m\n"
+                    f"Origin z: {georef.origin_z:.2f} m\n"
                     f"CRS: {georef.epsg_string}\n"
                     f"Mode: {'automatic' if georef.auto_conversion_enabled else 'manual'}",
                 )
