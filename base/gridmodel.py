@@ -1117,6 +1117,44 @@ class GridModel:
             tid[:, row, col] = 0
         self._rebuild_resolved_vegetation()
 
+    def remove_lad_in_building_columns(self, where=None):
+        """Delete LAD, BAD and tree_id in building columns, return the number of cleared cells.
+
+        Like palm_csd (overhanging_trees: False), a driver has no leaves in or
+        above a building. PALM would count them from the roof. Tree records stay,
+        their voxels skip building columns when the trees are rebuilt. where
+        limits the search to some cells. Bridge columns (buildings_3d only) are
+        not building columns, as in palm_csd.
+        """
+        columns = self.building_height > self.FLOAT_FILL
+        if where is not None:
+            columns = columns & where
+        cleared = np.zeros_like(columns)
+        if not columns.any():
+            return 0
+        for rv in (self.resolved_vegetation, self._loaded_rv):
+            if not rv:
+                continue
+            for key in ("lad", "bad", "tree_id"):
+                arr = rv.get(key)
+                if arr is None:
+                    continue
+                hit = columns & np.any(np.asarray(arr) > 0, axis=0)
+                if hit.any():
+                    arr[:, hit] = 0
+                    cleared |= hit
+        return int(np.count_nonzero(cleared))
+
+    def _clear_lad_column(self, row, col):
+        """Delete LAD, BAD and tree_id in one column, see remove_lad_in_building_columns()."""
+        for rv in (self.resolved_vegetation, self._loaded_rv):
+            if not rv:
+                continue
+            for key in ("lad", "bad", "tree_id"):
+                arr = rv.get(key)
+                if arr is not None and np.any(arr[:, row, col] > 0):
+                    arr[:, row, col] = 0
+
     def _rebuild_resolved_vegetation(self, track_tree_id=None):
         """Recompute lad/tree_id from tree_instances using an ellipsoid crown model."""
         has_loaded = (self._loaded_rv is not None
@@ -1147,6 +1185,10 @@ class GridModel:
         else:
             zlad = self.palm_zlad(nz, dz)
 
+        # Like palm_csd (overhanging_trees: False), no tree LAD goes into building
+        # columns, see remove_lad_in_building_columns(). In a bridge column
+        # (buildings_3d only) only the voxels up to the deck top are dropped.
+        building_column = self.building_height > self.FLOAT_FILL
         building_top_z = self._building_top_z()
         lad = self.allocate_storage((nz, self.ny, self.nx), np.float32, fill_value=0, name_prefix="lad")
         bad = self.allocate_storage((nz, self.ny, self.nx), np.float32, fill_value=0, name_prefix="bad")
@@ -1175,7 +1217,7 @@ class GridModel:
         for tree in self.tree_instances:
             tid = tree["id"]
             for iz_g, rr, cc, v, b in self._iter_tree_voxels(tree, dz, nz):
-                if zlad[iz_g] <= building_top_z[rr, cc]:
+                if building_column[rr, cc] or zlad[iz_g] <= building_top_z[rr, cc]:
                     if tid == track_tree_id:
                         tracked_clipped.add((iz_g, rr, cc))
                     continue
@@ -1258,6 +1300,7 @@ class GridModel:
                 self.building_id[row, col] = int(building_id)
                 self.building_height[row, col] = stored_height
                 self.building_type[row, col] = int(building_type)
+                self._clear_lad_column(row, col)
 
         for key, value in kwargs.items():
             if key in building_keys:

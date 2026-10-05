@@ -1288,17 +1288,18 @@ class PaintApplication(framework.Framework):
                 messagebox.showwarning(
                     "Tree clipped by building",
                     (
-                        f"Parts of the tree crown overlapped a building. "
-                        f"{clipped_voxels} LAD/BAD voxel(s) inside building volume were removed, "
-                        "and only the vegetation above the building was kept."
+                        f"Parts of the tree crown are over a building. "
+                        f"{clipped_voxels} LAD/BAD voxel(s) in building columns were removed, "
+                        "because a static driver has no leaves in or above a building "
+                        "(like palm_csd)."
                     ),
                 )
             else:
                 messagebox.showwarning(
                     "Tree fully inside building",
                     (
-                        "The tree overlapped only building volume, so no LAD/BAD voxels were placed. "
-                        "Only vegetation above buildings can be written."
+                        "The tree crown lies completely over buildings, so no LAD/BAD voxels "
+                        "were placed. PALMPaint does not place leaves in building columns."
                     ),
                 )
 
@@ -2256,6 +2257,7 @@ class PaintApplication(framework.Framework):
             f"Building parameter columns cleared outside buildings: {summary['building_parameters_cleared_outside_buildings']}",
             f"Soil cells filled from surface_config: {summary['soil_filled_from_surface_config']}",
             f"Automatic building IDs assigned: {summary['building_ids_auto_assigned']}",
+            f"Building cells with LAD cleared: {summary['lad_removed_in_buildings']}",
         ]
         if result["valid"]:
             lines.append("")
@@ -2387,6 +2389,7 @@ class PaintApplication(framework.Framework):
                 f"Narrow cavities filled: {summary['narrow_cavities_filled']}",
                 f"Narrow-cavity voxels filled: {summary['narrow_cavity_voxels_filled']}",
                 f"New building cells created: {summary.get('new_building_cells', 0)}",
+                f"Building cells with LAD cleared: {summary.get('lad_removed_in_buildings', 0)}",
                 "",
                 "Validation after filter sweep: no issues found."
                 if result["valid"]
@@ -2721,6 +2724,14 @@ class PaintApplication(framework.Framework):
             messagebox.showwarning("Georeference", georef_warning)
             # The load warning already told about a default origin
             self._default_origin_confirmed = True
+        n_lad_removed = resolved_vegetation.get("lad_removed_in_buildings", 0)
+        if n_lad_removed:
+            messagebox.showwarning(
+                "Resolved vegetation",
+                f"{n_lad_removed} building cells had leaves (LAD) in or above the building. "
+                "PALMPaint removed them, like palm_csd does (overhanging_trees: False). "
+                "Save the project to write the file without them.",
+            )
         if resolved_vegetation.get("zlad_repaired"):
             messagebox.showwarning(
                 "Resolved vegetation",

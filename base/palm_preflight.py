@@ -408,4 +408,5 @@ def apply_filter_sweep(model):
         model.water_type[new_building_mask] = model.INT_FILL
 
     result["summary"]["new_building_cells"] = int(np.count_nonzero(new_building_mask))
+    result["summary"]["lad_removed_in_buildings"] = model.remove_lad_in_building_columns(new_building_mask)
     return result

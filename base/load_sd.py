@@ -295,6 +295,8 @@ def LoadModel(filename="output.nc", surface_config=None):
         }
         model._loaded_rv = resolved_vegetation
         model.resolved_vegetation = resolved_vegetation
+        # No leaves in or above buildings, like palm_csd (overhanging_trees: False)
+        resolved_vegetation["lad_removed_in_buildings"] = model.remove_lad_in_building_columns()
 
         if tree_id is not None:
             max_id = int(tree_id.max())

@@ -63,61 +63,13 @@ def _default_soil_for_surface(model, *, vegetation_type=None, pavement_type=None
     return soil_default
 
 
-def _vertical_overlap_with_buildings(model):
-    """Return a per-cell mask where LAD/BAD overlaps the building volume."""
-    rv = model.resolved_vegetation
-    if rv is None:
-        return np.zeros(model.vegetation_type.shape, dtype=bool)
-
-    zlad = rv.get("zlad")
-    if zlad is None:
-        return np.zeros(model.vegetation_type.shape, dtype=bool)
-
-    lad = rv.get("lad")
-    bad = rv.get("bad")
-    if lad is None and bad is None:
-        return np.zeros(model.vegetation_type.shape, dtype=bool)
-
-    active_volume = None
-    if lad is not None:
-        active_volume = lad > 0
-    if bad is not None:
-        bad_active = bad > 0
-        active_volume = bad_active if active_volume is None else (active_volume | bad_active)
-
-    if active_volume is None or not np.any(active_volume):
-        return np.zeros(model.vegetation_type.shape, dtype=bool)
-
-    zlad = np.asarray(zlad, dtype=np.float32)
-    overlap_mask = np.zeros(active_volume.shape[1:], dtype=bool)
-
-    source_buildings_3d = rv.get("source_buildings_3d")
-    source_buildings_3d_z = rv.get("source_buildings_3d_z")
-    if source_buildings_3d is not None and source_buildings_3d_z is not None:
-        occupied = np.asarray(source_buildings_3d) > 0
-        z3d = np.asarray(source_buildings_3d_z, dtype=np.float32)
-        occupied_columns = np.any(occupied, axis=0)
-        if np.any(occupied_columns):
-            top_indices = np.argmax(occupied[::-1], axis=0)
-            top_indices = occupied.shape[0] - 1 - top_indices
-            top_z = z3d[top_indices]
-            active_below_top = active_volume & (zlad[:, np.newaxis, np.newaxis] <= top_z[np.newaxis, :, :])
-            overlap_mask = occupied_columns & np.any(active_below_top, axis=0)
-        return overlap_mask
-
-    active_below_height = active_volume & (
-        zlad[:, np.newaxis, np.newaxis] <= model.building_height[np.newaxis, :, :]
-    )
-    has_building_height = model.building_height > model.FLOAT_FILL
-    return has_building_height & np.any(active_below_height, axis=0)
-
-
 def clean_model(model):
     """Clean common static-driver inconsistencies in-place and return a summary.
 
-    Only changes what PALM rejects or what can never be used. Surface types on
-    building cells (the ground under bridges), LAD in building columns and
-    negative zt are valid for PALM and stay.
+    Only changes what PALM rejects or what can never be used, plus LAD in
+    building columns: like palm_csd (overhanging_trees: False), a driver has no
+    leaves in or above a building. Surface types on building cells (the ground
+    under bridges) and negative zt are valid for PALM and stay.
     """
     summary = {
         "zt_repaired": 0,
@@ -126,6 +78,7 @@ def clean_model(model):
         "soil_filled_from_surface_config": 0,
         "building_ids_auto_assigned": 0,
         "building_parameters_cleared_outside_buildings": 0,
+        "lad_removed_in_buildings": 0,
     }
 
     invalid_zt_mask = (
@@ -190,6 +143,8 @@ def clean_model(model):
             model.building_id[row, col] = auto_id
         summary["building_ids_auto_assigned"] = n_auto
 
+    summary["lad_removed_in_buildings"] = model.remove_lad_in_building_columns()
+
     return summary
 
 
@@ -235,8 +190,9 @@ def validate(model, georef=None, export_buildings_3d=True):
 
     Notes
     -----
-    LAD/BAD in a building column below the roof height: PALM counts zlad from
-    the roof there, so it puts this vegetation on top of the roof.
+    LAD/BAD in a building column: PALM counts zlad from the roof there, so
+    this vegetation ends up higher than its zlad says. Like palm_csd, PALMPaint
+    allows no leaves in or above a building, clean_model() removes them.
     soil_type without vegetation or pavement (water, buildings): PALM ignores
     it, but a clean driver has soil only where there is soil. clean_model()
     removes it.
@@ -336,7 +292,7 @@ def validate(model, georef=None, export_buildings_3d=True):
         notes.append(f"{n_stray_soil} cells have soil without vegetation or pavement.")
         note_mask |= stray_soil_mask
 
-    # 6. LAD/BAD in building columns is allowed, PALM puts it on the roof.
+    # 6. LAD/BAD in building columns: PALM allows it, PALMPaint does not (like palm_csd).
     rv = model.resolved_vegetation
     lad = None if rv is None else rv.get("lad")
     bad = None if rv is None else rv.get("bad")
@@ -347,11 +303,11 @@ def validate(model, georef=None, export_buildings_3d=True):
         if bad is not None:
             active_2d |= np.any(bad > 0, axis=0)
 
-        overlap_trees_mask = _vertical_overlap_with_buildings(model)
-        n_overlap_trees = int(np.count_nonzero(overlap_trees_mask))
-        if n_overlap_trees:
-            notes.append(f"{n_overlap_trees} building cells have LAD below the roof, PALM puts it on the roof.")
-            note_mask |= overlap_trees_mask
+        roof_trees_mask = active_2d & (model.building_height > FLOAT_FILL)
+        n_roof_trees = int(np.count_nonzero(roof_trees_mask))
+        if n_roof_trees:
+            notes.append(f"{n_roof_trees} building cells have LAD, Clean Static Driver removes it.")
+            note_mask |= roof_trees_mask
 
         orphan_trees_mask = active_2d & ~(has_veg | has_pav | has_wat) & ~has_building
         n_orphan_trees = int(np.count_nonzero(orphan_trees_mask))
