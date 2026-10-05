@@ -156,39 +156,58 @@ def _build_ground_mesh(snap: dict) -> 'pv.PolyData':
 # Building mesh
 # ---------------------------------------------------------------------------
 
-def _build_building_mesh(snap: dict) -> 'pv.PolyData | None':
-    """Exterior building faces as a quad mesh coloured by building type.
+# Side walls: name, row and column offset of the neighbour (row 0 = south), face_id
+_WALL_SIDES = (("south", -1, 0, 1), ("north", 1, 0, 2), ("west", 0, -1, 3), ("east", 0, 1, 4))
 
+
+def _building_wall_spans(snap: dict):
+    """Visible part of every building cell's four side walls (culling).
+
+    A side wall is visible from the neighbour's roof up to the cell's own roof:
+    the neighbouring building, standing on solid ground, covers everything below
+    its roof. Next to a cell without a building the wall reaches down to the
+    cell's own ground, next to a building at least as tall it is hidden and left
+    out. This also draws the step between two buildings of different height.
+
+    Returns rows, cols, z0 (ground) and z1 (roof) of the building cells and
+    {side: (visible, bottom)}, both arrays over those cells.
+    """
+    bh = snap['building_height']
+    zt = snap['zt'].astype(np.float32)
+    bldg = (bh != snap['FLOAT_FILL']) & (bh > 0)
+    rows, cols = np.nonzero(bldg)
+    z0 = zt[rows, cols]
+    z1 = (z0 + bh[rows, cols]).astype(np.float32)
+
+    roof = np.where(bldg, zt + np.where(bldg, bh, 0.0), -np.inf).astype(np.float32)
+    roof_pad = np.pad(roof, 1, constant_values=-np.inf)   # no building outside the domain
+    walls = {}
+    for side, dr, dc, _face_id in _WALL_SIDES:
+        bottom = np.maximum(z0, roof_pad[rows + 1 + dr, cols + 1 + dc])
+        walls[side] = (bottom < z1 - 1e-3, bottom)
+    return rows, cols, z0, z1, walls
+
+
+def _build_building_mesh(snap: dict) -> 'pv.PolyData | None':
+    """Visible building faces as a quad mesh coloured by building type.
+
+    Roofs, and the side walls from _building_wall_spans(). Every face points
+    outwards (corners anticlockwise seen from outside) for back-face culling.
     Each face cell stores [row, col, face_id] in cell_data['face_tag'] for
     future cell-picking (green walls, albedo editing).
     """
     res = snap['res']
-    FLOAT_FILL = snap['FLOAT_FILL']
-    bh = snap['building_height']
-    zt = snap['zt'].astype(np.float32)
     btype = snap['building_type']
 
-    bldg_mask = (bh != FLOAT_FILL) & (bh > 0)
-    if not bldg_mask.any():
-        return None
-
-    brows, bcols = np.where(bldg_mask)
+    brows, bcols, z0, z1, walls = _building_wall_spans(snap)
     N = len(brows)
+    if N == 0:
+        return None
 
     x0 = (bcols * res).astype(np.float32)
     x1 = ((bcols + 1) * res).astype(np.float32)
     y0 = (brows * res).astype(np.float32)               # south edge of cell (row 0 = south)
     y1 = ((brows + 1) * res).astype(np.float32)         # north edge of cell
-    z0 = zt[brows, bcols]
-    z1 = (zt[brows, bcols] + bh[brows, bcols]).astype(np.float32)
-
-    # Exterior face detection using padded mask
-    pad = np.pad(bldg_mask, ((1, 1), (1, 1)), constant_values=False)
-    # pad[r+1, c+1] == bldg_mask[r, c];  row 0 = south, row increases northward
-    ext_south = ~pad[brows,     bcols + 1]  # neighbour at row-1 (south, lower row index)
-    ext_north = ~pad[brows + 2, bcols + 1]  # neighbour at row+1 (north, higher row index)
-    ext_west  = ~pad[brows + 1, bcols]      # neighbour at col-1
-    ext_east  = ~pad[brows + 1, bcols + 2]  # neighbour at col+1
 
     # Building-type colour lookup
     btype_lut = {}
@@ -240,28 +259,22 @@ def _build_building_mesh(snap: dict) -> 'pv.PolyData | None':
         _col3(x0, y0, z1), _col3(x1, y0, z1),
         _col3(x1, y1, z1), _col3(x0, y1, z1),
     )
-    south_quads = _stack(
-        _col3(x0, y0, z0), _col3(x1, y0, z0),
-        _col3(x1, y0, z1), _col3(x0, y0, z1),
-    )
-    north_quads = _stack(
-        _col3(x1, y1, z0), _col3(x0, y1, z0),
-        _col3(x0, y1, z1), _col3(x1, y1, z1),
-    )
-    west_quads = _stack(
-        _col3(x0, y1, z0), _col3(x0, y0, z0),
-        _col3(x0, y0, z1), _col3(x0, y1, z1),
-    )
-    east_quads = _stack(
-        _col3(x1, y0, z0), _col3(x1, y1, z0),
-        _col3(x1, y1, z1), _col3(x1, y0, z1),
-    )
+    _add_face_set(np.ones(N, dtype=bool), top_quads, 0)
 
-    _add_face_set(np.ones(N, dtype=bool), top_quads,   0)
-    _add_face_set(ext_south,              south_quads,  1)
-    _add_face_set(ext_north,              north_quads,  2)
-    _add_face_set(ext_west,               west_quads,   3)
-    _add_face_set(ext_east,               east_quads,   4)
+    # Each wall from its visible bottom (neighbour's roof or own ground) to the roof
+    zb = {side: bottom for side, (_visible, bottom) in walls.items()}
+    side_quads = {
+        "south": _stack(_col3(x0, y0, zb["south"]), _col3(x1, y0, zb["south"]),
+                        _col3(x1, y0, z1), _col3(x0, y0, z1)),
+        "north": _stack(_col3(x1, y1, zb["north"]), _col3(x0, y1, zb["north"]),
+                        _col3(x0, y1, z1), _col3(x1, y1, z1)),
+        "west":  _stack(_col3(x0, y1, zb["west"]), _col3(x0, y0, zb["west"]),
+                        _col3(x0, y0, z1), _col3(x0, y1, z1)),
+        "east":  _stack(_col3(x1, y0, zb["east"]), _col3(x1, y1, zb["east"]),
+                        _col3(x1, y1, z1), _col3(x1, y0, z1)),
+    }
+    for side, _dr, _dc, face_id in _WALL_SIDES:
+        _add_face_set(walls[side][0], side_quads[side], face_id)
 
     if not all_pts:
         return None
@@ -449,17 +462,19 @@ def _run_plotter(snap: dict) -> None:
     p = pv.Plotter(title='PALMPaint \u2014 3D View')
     p.background_color = '#87CEEB'
 
-    p.add_mesh(ground,   scalars='RGB', rgb=True, show_scalar_bar=False)
+    # Back-face culling: the GPU skips faces turned away from the camera. All
+    # meshes put their corners anticlockwise seen from outside, so normals point out.
+    p.add_mesh(ground,   scalars='RGB', rgb=True, show_scalar_bar=False, culling='back')
 
     if bld_mesh is not None:
-        p.add_mesh(bld_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
+        p.add_mesh(bld_mesh, scalars='RGB', rgb=True, show_scalar_bar=False, culling='back')
 
     if bridge_mesh is not None:
-        p.add_mesh(bridge_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
+        p.add_mesh(bridge_mesh, scalars='RGB', rgb=True, show_scalar_bar=False, culling='back')
 
     if lad_mesh is not None:
         # Opaque, because transparency is the most expensive part of rendering
-        p.add_mesh(lad_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
+        p.add_mesh(lad_mesh, scalars='RGB', rgb=True, show_scalar_bar=False, culling='back')
 
     p.show_axes()
 

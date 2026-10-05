@@ -8,6 +8,16 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.5.7-alpha] — dev branch (unreleased)
+
+### Fixed
+- 3D view: walls were missing where two buildings, or two parts of one building, of different height stand side by side, so the view showed holes. `_build_building_mesh()` in `base/threedview.py` drew a side wall only next to a cell without a building. The new `_building_wall_spans()` computes the visible part of every side wall: from the neighbour's roof up to the cell's own roof (the neighbour stands on solid ground and covers everything below its roof), down to the own ground next to a cell without a building, and nothing next to a building at least as tall. This draws every step and still leaves out every hidden wall (`palmgeo/hannover_1024_static`: building mesh 0.82 million faces, built in 0.1 s). Tests in the new `tests/test_threedview.py`
+
+### Changed
+- 3D view: back-face culling for the ground, buildings, bridges and LAD (`culling='back'` in `_run_plotter()`), the GPU skips faces turned away from the camera. All meshes put their corners anticlockwise seen from outside, a new test checks that every face of every mesh points outwards. Hannover 1024 (3.94 million faces, off-screen 1600 x 900): 38 to 41 ms per frame without, 32 to 33 ms with back-face culling
+- Version 0.5.7-alpha (`base/version.py`)
+
+---
 ## [0.5.6-alpha] - dev branch (unreleased)
 
 ### Added
