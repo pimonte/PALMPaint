@@ -10,11 +10,10 @@ or a future 3D viewer.
 """
 
 import math
-import os
-import tempfile
 import copy
 
 import numpy as np
+from base import array_store
 from base.building_config import BUILDING_CONFIG, default_building_type
 
 # ---------------------------------------------------------------------------
@@ -193,7 +192,6 @@ class GridModel:
     INT_FILL   = -127
     FLOAT_FILL = -9999.0
     BUILDING_ID_FILL = -9999
-    TEMP_BACKED_ARRAY_THRESHOLD_BYTES = 64 * 1024 * 1024
     BUILDING_PARAMETER_DIMENSIONS = BUILDING_CONFIG["parameter_dimensions"]
     BUILDING_PARAMETER_SPECS = BUILDING_CONFIG["parameter_specs"]
 
@@ -312,8 +310,6 @@ class GridModel:
         self.dz = float(dz) if dz is not None else float(res)
         self.show_grid_lines = True
         self.surface_config = surface_config
-        self._temp_store = None
-        self._temp_array_counter = 0
         self._building_top_cache = None
 
         # Default: bare soil everywhere — derive types from surface_config when available
@@ -382,35 +378,16 @@ class GridModel:
         # cell-by-cell via remove_loaded_lad_at().
         self._loaded_rv = None
 
-    def _ensure_temp_store(self):
-        if self._temp_store is None:
-            self._temp_store = tempfile.TemporaryDirectory(prefix="palmpaint_arrays_")
-        return self._temp_store.name
-
-    def _should_use_temp_backing(self, shape, dtype, prefer_temp=None):
-        if prefer_temp is not None:
-            return bool(prefer_temp)
-        size_bytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
-        return size_bytes >= self.TEMP_BACKED_ARRAY_THRESHOLD_BYTES
-
     def allocate_storage(self, shape, dtype, *, fill_value=0, prefer_temp=None, name_prefix="array"):
-        """Allocate an ndarray, using a temporary memmap for large volumes."""
-        dtype = np.dtype(dtype)
-        shape = tuple(int(dim) for dim in shape)
-        if self._should_use_temp_backing(shape, dtype, prefer_temp=prefer_temp):
-            store_dir = self._ensure_temp_store()
-            self._temp_array_counter += 1
-            path = os.path.join(store_dir, f"{name_prefix}_{self._temp_array_counter}.dat")
-            arr = np.memmap(path, dtype=dtype, mode="w+", shape=shape)
-            if fill_value == 0:
-                arr[:] = 0
-            else:
-                arr.fill(fill_value)
-            return arr
+        """Allocate an array, in RAM or for large arrays as a file on disk.
 
-        if fill_value == 0:
-            return np.zeros(shape, dtype=dtype)
-        return np.full(shape, fill_value, dtype=dtype)
+        See base/array_store.py: arrays larger than 1/32 of the RAM budget
+        (--ram, default 8 GB) become a memmap in PALMPaint's tmp/ folder.
+        prefer_temp forces one or the other.
+        """
+        return array_store.allocate(
+            shape, dtype, fill_value=fill_value, prefer_disk=prefer_temp, name_prefix=name_prefix
+        )
 
     def materialize_storage(self, source, *, dtype=None, prefer_temp=None, name_prefix="array"):
         """Copy source data into regular or temp-backed storage."""

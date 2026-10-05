@@ -25,11 +25,13 @@ import numpy as np
 import os
 import threading
 import time
+import traceback
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
 import tkinter.messagebox as messagebox
 
+from base import array_store
 import base.building_config as building_config
 import base.report as report
 import base.framework as framework
@@ -40,8 +42,14 @@ from base.load_sd import LoadModel, find_unsupported_variables
 _arg_parser = argparse.ArgumentParser(add_help=False)
 _arg_parser.add_argument("--backend", choices=["pil", "tk"], default=None)
 _arg_parser.add_argument("--experimental", action="store_true")
+# RAM budget in GB: arrays larger than 1/32 of it go into files in tmp/ (base/array_store.py)
+_arg_parser.add_argument("--ram", type=float, default=array_store.DEFAULT_RAM_GB)
 _arg_parser.add_argument("startup_path", nargs="?", default=None)
 _cli_args, _ = _arg_parser.parse_known_args()
+
+array_store.set_ram_budget(_cli_args.ram)
+print(f"RAM budget {_cli_args.ram:g} GB (--ram): arrays from "
+      f"{array_store.disk_threshold_bytes() / 1024**2:.0f} MB are kept in files in tmp/.")
 
 # Parked brushes: untested, not part of a release. Shown only with --experimental.
 _EXPERIMENTAL_TOOLS = ("irrigation", "shf", "ssws") if _cli_args.experimental else ()
@@ -2790,7 +2798,15 @@ class PaintApplication(framework.Framework):
             self.res = computed_res
 
     
+    def _report_callback_exception(self, exc_type, exc_value, exc_tb):
+        """Errors in Tk callbacks: a dialog for a full disk, otherwise the traceback as before."""
+        if isinstance(exc_value, array_store.NotEnoughDiskSpace):
+            messagebox.showerror("Not enough disk space", str(exc_value))
+            return
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+
     def __init__(self, root,  nx=16, ny=16, res=4, dz=None):
+        root.report_callback_exception = self._report_callback_exception
         self._reset_editor_state()
         self.nx = nx
         self.ny = ny
@@ -4778,6 +4794,10 @@ class PaintApplication(framework.Framework):
         
         
 if __name__ == '__main__':
+    # Array files left behind by crashed or killed sessions
+    removed = array_store.cleanup_stale_sessions()
+    if removed:
+        print(f"Removed {removed} leftover session folder(s) from {array_store.tmp_root()}")
     root = tk.Tk()
     root.withdraw()
 
