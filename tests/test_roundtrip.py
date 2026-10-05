@@ -168,6 +168,14 @@ def test_save_load_keeps_all_layers(model, tmp_path):
     assert_same_layers(model, loaded)
 
 
+def test_save_without_surface_config_keeps_all_layers(model, tmp_path):
+    # Scripts may call SaveModel without a surface_config. It crashed on the
+    # water cell, and without defaults the water temperature would be lost.
+    model.surface_config = None
+    loaded = save_and_load(model, tmp_path / "driver.nc")
+    assert_same_layers(model, loaded)
+
+
 def test_pad_then_crop_keeps_all_layers(model):
     padded = model.padded(n_north=2, n_south=1, n_west=3, n_east=0)
     cropped = padded.cropped(col_start=3, row_start=1, new_nx=model.nx, new_ny=model.ny)

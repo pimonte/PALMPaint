@@ -1,4 +1,4 @@
-"""Tests for loading drivers: unsupported variables and foreign fill values."""
+"""Tests for loading drivers: unsupported variables, foreign fill values, 2D tree_id."""
 
 import netCDF4
 import numpy as np
@@ -60,3 +60,56 @@ def test_foreign_fill_values_stay_empty_after_save(tmp_path):
 
     assert count_empty(saved, "buildings_2d") == count_empty(source, "buildings_2d")
     assert count_empty(saved, "lad") == count_empty(source, "lad")
+
+
+def make_driver_with_2d_tree_id(path, lad_dims=("zlad", "y", "x")):
+    """A tiny driver like palmpy writes it: tree_id in 2D, one ID per column.
+
+    Column (2, 3) has leaves and ID 7. Column (0, 0) has ID 9 but no leaves.
+    """
+    with netCDF4.Dataset(path, "w") as nc_file:
+        nc_file.createDimension("x", 4)
+        nc_file.createDimension("y", 3)
+        nc_file.createDimension("zlad", 3)
+        nc_file.createVariable("x", "f4", ("x",))[:] = [0.5, 1.5, 2.5, 3.5]
+        nc_file.createVariable("y", "f4", ("y",))[:] = [0.5, 1.5, 2.5]
+        nc_file.createVariable("zlad", "f4", ("zlad",))[:] = [0.0, 0.5, 1.5]
+        nc_file.createVariable("zt", "f4", ("y", "x"))[:] = np.zeros((3, 4), np.float32)
+
+        lad = np.full((3, 3, 4), -9999.0, np.float32)
+        lad[1:, 2, 3] = 0.8
+        if len(lad_dims) == 2:
+            lad = lad[1]
+        nc_file.createVariable("lad", "f4", lad_dims, fill_value=-9999.0)[:] = lad
+
+        tree_id = np.full((3, 4), -9999, np.int32)
+        tree_id[2, 3] = 7
+        tree_id[0, 0] = 9
+        nc_file.createVariable("tree_id", "i4", ("y", "x"), fill_value=-9999)[:] = tree_id
+
+
+def test_2d_tree_id_is_kept_on_the_voxels_with_leaves(tmp_path):
+    source = tmp_path / "palmpy_style.nc"
+    make_driver_with_2d_tree_id(source)
+
+    model, *_ = LoadModel(str(source), surface_config=surface_config.SURFACE_CONFIG)
+
+    rv = model.resolved_vegetation
+    assert rv["tree_id_from_2d"] == {"columns": 1, "without_leaves": 1}
+    np.testing.assert_array_equal(rv["tree_id"][:, 2, 3], [0, 7, 7])
+    assert not np.any(rv["tree_id"][:, 0, 0] > 0)
+
+    saved = tmp_path / "saved.nc"
+    save_and_load(model, saved)
+    with netCDF4.Dataset(saved) as nc_file:
+        assert nc_file.variables["tree_id"].dimensions == ("zlad", "y", "x")
+
+
+def test_3d_variables_with_an_unexpected_shape_are_reported(tmp_path):
+    source = tmp_path / "flat_lad.nc"
+    make_driver_with_2d_tree_id(source, lad_dims=("y", "x"))
+
+    model, *_ = LoadModel(str(source), surface_config=surface_config.SURFACE_CONFIG)
+
+    # without lad, the 2D tree_id has no voxels to sit on and is reported too
+    assert model.resolved_vegetation["unreadable_3d_variables"] == ["lad ('y', 'x')", "tree_id ('y', 'x')"]

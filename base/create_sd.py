@@ -206,14 +206,19 @@ def SaveModel(
             water_param_mask = water_data > GridModel.INT_FILL
             if np.any(water_param_mask):
                 default_water_temps = np.full((ny, nx), np.nan, dtype=np.float32)
-                for water_type_value, cfg in surface_config["water"]["types"].items():
+                water_types = (surface_config or {}).get("water", {}).get("types", {})
+                for water_type_value, cfg in water_types.items():
                     default_water_temps[water_data == int(water_type_value)] = float(cfg["water_temperature"])
                 current_water_temp = np.asarray(water_pars_data[0], dtype=np.float32)
+                # Written where the temperature differs from its type's default, or
+                # where no default is known (no surface_config, unknown water type)
                 custom_water_mask = (
                     water_param_mask
                     & (current_water_temp > GridModel.FLOAT_FILL)
-                    & np.isfinite(default_water_temps)
-                    & (np.abs(current_water_temp - default_water_temps) > 1e-6)
+                    & (
+                        ~np.isfinite(default_water_temps)
+                        | (np.abs(current_water_temp - default_water_temps) > 1e-6)
+                    )
                 )
             else:
                 custom_water_mask = np.zeros((ny, nx), dtype=bool)

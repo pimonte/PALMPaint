@@ -246,6 +246,21 @@ def LoadModel(filename="output.nc", surface_config=None):
             dtype=np.int32,
             storage_factory=_storage_factory,
         )
+        # palmpy writes tree_id in 2D, one ID per column. PALM's spec and palm_csd
+        # use 3D, so every voxel with leaves in a column gets the column's ID.
+        tree_id_from_2d = None
+        if tree_id is None and lad is not None:
+            tree_id, tree_id_from_2d = _tree_id_from_2d(nc_file, lad, bad, _storage_factory)
+        # 3D variables PALMPaint saves but could not read here (unexpected shape)
+        read_3d = {"buildings_3d": source_buildings_3d, "lad": lad, "bad": bad, "tree_id": tree_id}
+        # An index variable like tree_id(tree_id) only labels a dimension, it is no data
+        unreadable_3d = [
+            f"{name} {nc_file.variables[name].dimensions}"
+            for name, data in read_3d.items()
+            if name in nc_file.variables and data is None
+            and nc_file.variables[name].dimensions != (name,)
+        ]
+
         for name, dim_names in GridModel.BUILDING_PARAMETER_SPECS:
             target = model.building_pars[name]
             if len(dim_names) == 1:
@@ -283,6 +298,8 @@ def LoadModel(filename="output.nc", surface_config=None):
         resolved_vegetation = {
             "zlad": zlad,
             "zlad_repaired": zlad_repaired,
+            "tree_id_from_2d": tree_id_from_2d,
+            "unreadable_3d_variables": unreadable_3d,
             "lad": lad,
             "bad": bad,
             "tree_id": tree_id,
@@ -324,6 +341,36 @@ _SUPPORTED_VARIABLES = {
     "lad", "bad", "tree_id",
 }
 _SUPPORTED_VARIABLES.update(name for name, _dims in GridModel.BUILDING_PARAMETER_SPECS)
+
+
+def _tree_id_from_2d(nc_file, lad, bad, storage_factory):
+    """Spread a 2D tree_id (one ID per column) over the voxels with leaves.
+
+    Returns the 3D tree_id and a dict with the number of columns whose ID was
+    kept and of columns whose ID had no leaves to sit on, or (None, None) when
+    the file has no 2D tree_id of the grid's size.
+    """
+    var = nc_file.variables.get("tree_id")
+    if var is None or tuple(var.shape) != tuple(lad.shape[1:]):
+        return None, None
+    ids = var[:]
+    if hasattr(ids, "filled"):
+        ids = ids.filled(0)
+    ids = np.where(ids > 0, ids, 0).astype(np.int32)
+
+    tree_id = storage_factory(lad.shape, np.int32, 0, "tree_id")
+    has_leaves = np.zeros(ids.shape, dtype=bool)
+    for k in range(lad.shape[0]):      # layer by layer, lad may be a file on disk
+        leaves = np.asarray(lad[k]) > 0
+        if bad is not None:
+            leaves |= np.asarray(bad[k]) > 0
+        tree_id[k] = np.where(leaves, ids, 0)
+        has_leaves |= leaves
+    with_id = ids > 0
+    return tree_id, {
+        "columns": int(np.count_nonzero(with_id & has_leaves)),
+        "without_leaves": int(np.count_nonzero(with_id & ~has_leaves)),
+    }
 
 
 def is_old_palmpaint_zlad(zlad, dz):

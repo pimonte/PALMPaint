@@ -2682,6 +2682,27 @@ class PaintApplication(framework.Framework):
                 "PALMPaint removed them, like palm_csd does (overhanging_trees: False). "
                 "Save the project to write the file without them.",
             )
+        from_2d = resolved_vegetation.get("tree_id_from_2d")
+        if from_2d:
+            message = (
+                "tree_id in this file is 2D (one ID per column), PALM's specification "
+                "and palm_csd use 3D. PALMPaint gave every voxel with leaves the ID "
+                f"of its column ({from_2d['columns']} columns) and saves tree_id in 3D."
+            )
+            if from_2d["without_leaves"]:
+                message += (
+                    f"\n\n{from_2d['without_leaves']} column(s) had a tree_id but no leaves, "
+                    "their ID is not kept."
+                )
+            messagebox.showwarning("Resolved vegetation", message)
+        unreadable = resolved_vegetation.get("unreadable_3d_variables")
+        if unreadable:
+            messagebox.showwarning(
+                "Unreadable variables",
+                "These variables have an unexpected shape and could not be loaded.\n"
+                "They are not shown and will be missing when you save:\n\n"
+                + "\n".join(unreadable),
+            )
         if resolved_vegetation.get("zlad_repaired"):
             messagebox.showwarning(
                 "Resolved vegetation",
