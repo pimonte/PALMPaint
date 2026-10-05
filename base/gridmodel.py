@@ -231,6 +231,17 @@ class GridModel:
         return GridModel.infer_vertical_step(zlad, fallback)
 
     @staticmethod
+    def palm_zlad(nz, dz):
+        """PALM's vertical levels for resolved vegetation: 0, dz/2, 3 dz/2, ...
+
+        PALM requires zlad to equal its grid levels zu (init_grid.f90: zu(0) = 0
+        at the surface, zu(1) = dz/2) and stops with PCM0010 otherwise. Level
+        k >= 1 covers (k - 1) dz to k dz above the ground, level 0 is the
+        surface itself and is never read by the plant canopy model.
+        """
+        return np.concatenate(([0.0], (np.arange(1, nz) - 0.5) * dz)).astype(np.float32)
+
+    @staticmethod
     def quantize_building_height(value, dz):
         """Snap building heights to the vertical grid.
 
@@ -1018,7 +1029,7 @@ class GridModel:
         try:
             result = generate_tree(TreeParams(**gp), _grid)
         except Exception:
-            yield (0, tr, tc, float(tree["lai"]) / dz if dz > 0 else float(tree["lai"]), 0.0)
+            yield (1, tr, tc, float(tree["lai"]) / dz if dz > 0 else float(tree["lai"]), 0.0)
             return
 
         lad_tree = result["lad"]
@@ -1029,7 +1040,9 @@ class GridModel:
         cy_t = ny_t // 2
         for iz_t in range(nz_t):
             z_val = z_tree[iz_t]
-            iz_g = int(z_val / dz)
+            # Generator layers are centred at (k + 0.5) dz, PALM's level for the
+            # layer from k dz to (k + 1) dz is k + 1 (see palm_zlad)
+            iz_g = int(z_val / dz) + 1
             if not (0 <= iz_g < nz):
                 continue
             for iy_t in range(ny_t):
@@ -1132,7 +1145,7 @@ class GridModel:
                 extra = loaded_zlad[-1] + dz * np.arange(1, nz - loaded_zlad.size + 1, dtype=np.float32)
                 zlad = np.concatenate([loaded_zlad, extra]).astype(np.float32, copy=False)
         else:
-            zlad = ((np.arange(nz, dtype=np.float32) + 0.5) * dz).astype(np.float32, copy=False)
+            zlad = self.palm_zlad(nz, dz)
 
         building_top_z = self._building_top_z()
         lad = self.allocate_storage((nz, self.ny, self.nx), np.float32, fill_value=0, name_prefix="lad")

@@ -2721,6 +2721,16 @@ class PaintApplication(framework.Framework):
             messagebox.showwarning("Georeference", georef_warning)
             # The load warning already told about a default origin
             self._default_origin_confirmed = True
+        if resolved_vegetation.get("zlad_repaired"):
+            messagebox.showwarning(
+                "Resolved vegetation",
+                "This file was saved by an older PALMPaint version. Its zlad levels "
+                "(dz/2, 3 dz/2, ...) do not match PALM's vertical grid, so PALM stops "
+                "with error PCM0010.\n\n"
+                "PALMPaint added PALM's surface level zlad = 0 and moved every LAD "
+                "layer to the PALM level that covers its height. The vegetation itself "
+                "is unchanged. Save the project to write the corrected file.",
+            )
 
         print(f"Loaded NetCDF project from {file_path}")
             

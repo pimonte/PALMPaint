@@ -268,8 +268,21 @@ def LoadModel(filename="output.nc", surface_config=None):
                     storage_factory=None,
                 )
 
+        # PALMPaint before 0.5.6 wrote zlad = dz/2, 3 dz/2, ... for new projects,
+        # without PALM's surface level 0, so PALM stops with PCM0010. Each layer
+        # holds the vegetation of its height, so put an empty level 0 in front
+        # and every layer lands on the PALM level that covers it.
+        zlad_repaired = False
+        if zlad is not None and lad is not None and is_old_palmpaint_zlad(zlad, dz):
+            zlad = GridModel.palm_zlad(len(zlad) + 1, dz)
+            lad = _with_empty_level_0(lad, _storage_factory, "lad")
+            bad = _with_empty_level_0(bad, _storage_factory, "bad")
+            tree_id = _with_empty_level_0(tree_id, _storage_factory, "tree_id")
+            zlad_repaired = True
+
         resolved_vegetation = {
             "zlad": zlad,
+            "zlad_repaired": zlad_repaired,
             "lad": lad,
             "bad": bad,
             "tree_id": tree_id,
@@ -309,6 +322,23 @@ _SUPPORTED_VARIABLES = {
     "lad", "bad", "tree_id",
 }
 _SUPPORTED_VARIABLES.update(name for name, _dims in GridModel.BUILDING_PARAMETER_SPECS)
+
+
+def is_old_palmpaint_zlad(zlad, dz):
+    """True for the zlad of PALMPaint before 0.5.6: (k + 0.5) dz, without PALM's level 0."""
+    zlad = np.asarray(zlad, dtype=np.float64)
+    if zlad.size == 0 or dz <= 0:
+        return False
+    return bool(np.allclose(zlad, (np.arange(zlad.size) + 0.5) * dz, atol=1e-3 * dz))
+
+
+def _with_empty_level_0(data, storage_factory, name_prefix):
+    """Return a copy of a (nz, ny, nx) array with an empty level put in front."""
+    if data is None:
+        return None
+    out = storage_factory((data.shape[0] + 1,) + data.shape[1:], data.dtype, 0, name_prefix)
+    out[1:] = data
+    return out
 
 
 def find_unsupported_variables(filename):
