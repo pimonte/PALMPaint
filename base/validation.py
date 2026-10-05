@@ -29,6 +29,25 @@ def _has_building(model):
     return _has_building_id(model) | (model.building_height > model.FLOAT_FILL)
 
 
+def _id_without_building(model, export_buildings_3d):
+    """Cells whose building_id would have no building in the saved file (DRV0034).
+
+    Buildings that exist only in buildings_3d (bridges) are written only with
+    Export buildings_3d, and only where the file's voxels are still valid.
+    """
+    only_in_3d = (model.building_id > 0) & ~(model.building_height > model.FLOAT_FILL)
+    if not np.any(only_in_3d) or not export_buildings_3d:
+        return only_in_3d
+    source = model._file_buildings()
+    kept = model.unchanged_building_columns(
+        model.building_height, model.building_id, model.building_type, source
+    )
+    if kept is None:
+        return only_in_3d
+    has_voxels = np.any(np.asarray(source["source_buildings_3d"]) > 0, axis=0)
+    return only_in_3d & ~(kept & has_voxels)
+
+
 def _default_soil_for_surface(model, *, vegetation_type=None, pavement_type=None):
     surface_config = getattr(model, "surface_config", None) or {}
     soil_default = int(surface_config.get("soil", {}).get("default_type", 1))
@@ -93,62 +112,16 @@ def _vertical_overlap_with_buildings(model):
     return has_building_height & np.any(active_below_height, axis=0)
 
 
-def _vegetation_overlap_voxels(model):
-    """Return a 3-D mask where LAD/BAD intersects the building volume."""
-    rv = model.resolved_vegetation
-    if rv is None:
-        return None
-
-    zlad = rv.get("zlad")
-    if zlad is None:
-        return None
-
-    lad = rv.get("lad")
-    bad = rv.get("bad")
-    if lad is None and bad is None:
-        return None
-
-    active_volume = None
-    if lad is not None:
-        active_volume = lad > 0
-    if bad is not None:
-        bad_active = bad > 0
-        active_volume = bad_active if active_volume is None else (active_volume | bad_active)
-
-    if active_volume is None:
-        return None
-
-    zlad = np.asarray(zlad, dtype=np.float32)
-    source_buildings_3d = rv.get("source_buildings_3d")
-    source_buildings_3d_z = rv.get("source_buildings_3d_z")
-    if source_buildings_3d is not None and source_buildings_3d_z is not None:
-        occupied = np.asarray(source_buildings_3d) > 0
-        z3d = np.asarray(source_buildings_3d_z, dtype=np.float32)
-        occupied_columns = np.any(occupied, axis=0)
-        if not np.any(occupied_columns):
-            return np.zeros_like(active_volume, dtype=bool)
-        top_indices = np.argmax(occupied[::-1], axis=0)
-        top_indices = occupied.shape[0] - 1 - top_indices
-        top_z = z3d[top_indices]
-        return active_volume & occupied_columns[np.newaxis, :, :] & (
-            zlad[:, np.newaxis, np.newaxis] <= top_z[np.newaxis, :, :]
-        )
-
-    has_building_height = model.building_height > model.FLOAT_FILL
-    return active_volume & has_building_height[np.newaxis, :, :] & (
-        zlad[:, np.newaxis, np.newaxis] <= model.building_height[np.newaxis, :, :]
-    )
-
-
 def clean_model(model):
-    """Clean common static-driver inconsistencies in-place and return a summary."""
+    """Clean common static-driver inconsistencies in-place and return a summary.
+
+    Only changes what PALM rejects or what can never be used. Surface types on
+    building cells (the ground under bridges), LAD in building columns and
+    negative zt are valid for PALM and stay.
+    """
     summary = {
         "zt_repaired": 0,
-        "vegetation_voxels_cleared_in_buildings": 0,
-        "vegetation_columns_cleared_in_buildings": 0,
-        "tree_ids_cleared_in_buildings": 0,
-        "soil_cleared_under_water_or_buildings": 0,
-        "surface_types_cleared_on_buildings": 0,
+        "soil_cleared_without_vegetation_or_pavement": 0,
         "water_pars_cleared_outside_water": 0,
         "soil_filled_from_surface_config": 0,
         "building_ids_auto_assigned": 0,
@@ -158,60 +131,19 @@ def clean_model(model):
     invalid_zt_mask = (
         ~np.isfinite(model.zt)
         | np.isclose(model.zt, float(model.FLOAT_FILL))
-        | (np.asarray(model.zt, dtype=np.float32) < 0.0)
     )
     summary["zt_repaired"] = int(np.count_nonzero(invalid_zt_mask))
     if summary["zt_repaired"]:
         model.zt[invalid_zt_mask] = 0.0
 
     has_building = _has_building(model)
-    has_veg = model.vegetation_type > model.INT_FILL
-    has_pav = model.pavement_type > model.INT_FILL
-    has_wat = model.water_type > model.INT_FILL
 
-    overlap_voxels = _vegetation_overlap_voxels(model)
-    if overlap_voxels is not None and np.any(overlap_voxels):
-        rv_candidates = [model.resolved_vegetation]
-        loaded_rv = getattr(model, "_loaded_rv", None)
-        if loaded_rv is not None and loaded_rv is not model.resolved_vegetation:
-            rv_candidates.append(loaded_rv)
-
-        affected_columns = np.any(overlap_voxels, axis=0)
-        summary["vegetation_columns_cleared_in_buildings"] = int(np.count_nonzero(affected_columns))
-
-        for rv in rv_candidates:
-            lad = rv.get("lad")
-            bad = rv.get("bad")
-            tree_id = rv.get("tree_id")
-
-            if lad is not None:
-                lad_clear = overlap_voxels & (lad > 0)
-                summary["vegetation_voxels_cleared_in_buildings"] += int(np.count_nonzero(lad_clear))
-                lad[lad_clear] = 0.0
-
-            if bad is not None:
-                bad_clear = overlap_voxels & (bad > 0)
-                summary["vegetation_voxels_cleared_in_buildings"] += int(np.count_nonzero(bad_clear))
-                bad[bad_clear] = 0.0
-
-            if tree_id is not None:
-                tree_clear = overlap_voxels & (tree_id > 0)
-                summary["tree_ids_cleared_in_buildings"] += int(np.count_nonzero(tree_clear))
-                tree_id[tree_clear] = 0
-
-        if len(rv_candidates) > 1:
-            summary["vegetation_voxels_cleared_in_buildings"] //= len(rv_candidates)
-            summary["tree_ids_cleared_in_buildings"] //= len(rv_candidates)
-
-    wrong_soil_mask = (has_building | has_wat) & (model.soil_type > model.INT_FILL)
-    summary["soil_cleared_under_water_or_buildings"] = int(np.count_nonzero(wrong_soil_mask))
-    model.soil_type[wrong_soil_mask] = model.INT_FILL
-
-    surface_clear_mask = has_building & (has_veg | has_pav | has_wat)
-    summary["surface_types_cleared_on_buildings"] = int(np.count_nonzero(surface_clear_mask))
-    model.vegetation_type[surface_clear_mask] = model.INT_FILL
-    model.pavement_type[surface_clear_mask] = model.INT_FILL
-    model.water_type[surface_clear_mask] = model.INT_FILL
+    # Soil only under vegetation or pavement, not under water or buildings
+    stray_soil_mask = (model.soil_type > model.INT_FILL) & ~(
+        (model.vegetation_type > model.INT_FILL) | (model.pavement_type > model.INT_FILL)
+    )
+    summary["soil_cleared_without_vegetation_or_pavement"] = int(np.count_nonzero(stray_soil_mask))
+    model.soil_type[stray_soil_mask] = model.INT_FILL
 
     water_pars_set = np.any(model.water_pars > model.FLOAT_FILL, axis=0)
     orphan_wp_mask = water_pars_set & ~(model.water_type > model.INT_FILL)
@@ -261,8 +193,8 @@ def clean_model(model):
     return summary
 
 
-def validate(model, georef=None):
-    """Check surface-layer consistency rules for *model*.
+def validate(model, georef=None, export_buildings_3d=True):
+    """Check *model* against the rules PALM applies when it reads a static driver.
 
     Parameters
     ----------
@@ -270,39 +202,60 @@ def validate(model, georef=None):
         The grid model to validate.
     georef : GeoReference or None, optional
         If supplied, coordinate-range checks (e.g. DRV0001) are also run.
+    export_buildings_3d : bool, optional
+        Whether buildings_3d is saved. Without it, buildings that exist only in
+        3D (bridges) cannot be saved, their building_id is reported (DRV0034).
 
     Returns
     -------
     dict with keys:
-      'valid'        – True if no violations were found
-      'violations'   – list of human-readable violation strings
-      'invalid_mask' – boolean numpy array of shape (ny, nx); True for every
-                       cell that is involved in at least one per-cell rule
-                       violation.  Global checks (e.g. DRV0001) have no
-                       associated cells and do not affect this mask.
+      'valid'        - True if no violations were found
+      'violations'   - list of errors: PALM stops or the data is wrong
+      'notes'        - list of hints: PALM runs, but the user should know
+      'invalid_mask' - boolean numpy array of shape (ny, nx), True for every
+                       cell involved in at least one per-cell violation.
+                       Global checks (e.g. DRV0001) and notes do not affect it.
+      'note_mask'    - boolean numpy array of shape (ny, nx), the cells of the notes
 
-    Rules enforced
-    --------------
-    1. vegetation_type / pavement_type / water_type are mutually exclusive.
-    2. Building cells must not also carry a surface type.
+    Errors
+    ------
+    1. vegetation_type / pavement_type / water_type are mutually exclusive (DRV0024).
     3. If any surface type is used anywhere, every non-building cell
-       must have exactly one of the three types (no bare fill allowed).
+       must have exactly one of the three types (DRV0021 / DRV0022).
     4. water_pars may only be set on water cells.
-    5. Vegetation and pavement cells require a soil_type.
-       Building and water cells must have soil_type = fill.
-    6. LAD/BAD data may be above buildings, but must not intersect the
-       building volume. On non-building columns, a surface type is required.
+    5. Vegetation and pavement cells require a soil_type (DRV0023).
+    6. On non-building columns with LAD/BAD, a surface type is required.
     7. building_type requires building_id.
-    8. building_id values must be positive and ≤ INT32_MAX.
+    8. building_id values must be positive and <= INT32_MAX.
+    9. A building needs a building_type and a building_id, and a building_id
+       needs a building (DRV0033 / DRV0034).
+    zt must not contain fill values or NaN. Negative zt is fine, PALM
+    subtracts the lowest terrain point.
     DRV0001: origin_lon must be in [-180, 180] and origin_lat in [-90, 90].
+
+    Notes
+    -----
+    LAD/BAD in a building column below the roof height: PALM counts zlad from
+    the roof there, so it puts this vegetation on top of the roof.
+    soil_type without vegetation or pavement (water, buildings): PALM ignores
+    it, but a clean driver has soil only where there is soil. clean_model()
+    removes it.
+    Bridge cells whose deck reaches down to the ground: the flow cannot pass
+    under them (seen in palmgeo drivers, where the deck height is too low).
+
+    Not checked on purpose, because PALM needs or allows it: surface types on
+    building cells. The ground under a bridge needs one (LSM0039), and palm_csd
+    writes them for buildings lower than dz.
     """
     violations = []
+    notes = []
 
     INT_FILL   = model.INT_FILL
     FLOAT_FILL = model.FLOAT_FILL
 
     ny, nx = model.vegetation_type.shape
     invalid_mask = np.zeros((ny, nx), dtype=bool)
+    note_mask = np.zeros((ny, nx), dtype=bool)
 
     # Building IDs are valid only when they are strictly positive. In practice we
     # also see multiple legacy fill conventions for "unset" cells, most commonly
@@ -320,17 +273,17 @@ def validate(model, georef=None):
     has_pav = model.pavement_type   > INT_FILL
     has_wat = model.water_type      > INT_FILL
 
-    # 1. Mutual exclusivity
+    # zt: no fill values or NaN. Negative values are fine, PALM subtracts the
+    # lowest terrain point (topography_mod.f90)
     invalid_zt_mask = (
         ~np.isfinite(model.zt)
         | np.isclose(model.zt, float(FLOAT_FILL))
-        | (np.asarray(model.zt, dtype=np.float32) < 0.0)
     )
     n_invalid_zt = int(np.count_nonzero(invalid_zt_mask))
     if n_invalid_zt:
         violations.append(
             f"{n_invalid_zt} cell(s) have invalid zt values "
-            "(fill values, NaN/Inf, or negative terrain heights are not allowed)."
+            "(fill values and NaN/Inf are not allowed)."
         )
         invalid_mask |= invalid_zt_mask
 
@@ -343,16 +296,6 @@ def validate(model, georef=None):
             "(vegetation / pavement / water are mutually exclusive)."
         )
         invalid_mask |= overlap_mask
-
-    # 2. Building cells must not carry a surface type
-    bld_surface_mask = has_building & (has_veg | has_pav | has_wat)
-    n_bld_surface = int(np.count_nonzero(bld_surface_mask))
-    if n_bld_surface:
-        violations.append(
-            f"{n_bld_surface} building cell(s) also have a surface type set "
-            "(surface type must be fill on building cells)."
-        )
-        invalid_mask |= bld_surface_mask
 
     # 3. Completeness: once any surface type is used, no non-building cell
     #    may remain without one
@@ -386,17 +329,14 @@ def validate(model, georef=None):
         )
         invalid_mask |= no_soil_mask
 
-    # 5b. Building / water cells must have soil_type = fill
-    wrong_soil_mask = (has_building | has_wat) & (model.soil_type > INT_FILL)
-    n_wrong_soil = int(np.count_nonzero(wrong_soil_mask))
-    if n_wrong_soil:
-        violations.append(
-            f"{n_wrong_soil} building/water cell(s) have a soil_type set "
-            "(soil_type must be fill on building and water cells)."
-        )
-        invalid_mask |= wrong_soil_mask
+    # soil_type only where there is soil: under vegetation or pavement
+    stray_soil_mask = (model.soil_type > INT_FILL) & ~(has_veg | has_pav)
+    n_stray_soil = int(np.count_nonzero(stray_soil_mask))
+    if n_stray_soil:
+        notes.append(f"{n_stray_soil} cells have soil without vegetation or pavement.")
+        note_mask |= stray_soil_mask
 
-    # 6. LAD/BAD data may be above buildings, but must not overlap them.
+    # 6. LAD/BAD in building columns is allowed, PALM puts it on the roof.
     rv = model.resolved_vegetation
     lad = None if rv is None else rv.get("lad")
     bad = None if rv is None else rv.get("bad")
@@ -410,11 +350,8 @@ def validate(model, georef=None):
         overlap_trees_mask = _vertical_overlap_with_buildings(model)
         n_overlap_trees = int(np.count_nonzero(overlap_trees_mask))
         if n_overlap_trees:
-            violations.append(
-                f"{n_overlap_trees} cell(s) have LAD/BAD inside the building volume "
-                "(resolved vegetation may be above buildings, but not inside them)."
-            )
-            invalid_mask |= overlap_trees_mask
+            notes.append(f"{n_overlap_trees} building cells have LAD below the roof, PALM puts it on the roof.")
+            note_mask |= overlap_trees_mask
 
         orphan_trees_mask = active_2d & ~(has_veg | has_pav | has_wat) & ~has_building
         n_orphan_trees = int(np.count_nonzero(orphan_trees_mask))
@@ -435,6 +372,51 @@ def validate(model, georef=None):
             "(building_id is required whenever building_type is provided)."
         )
         invalid_mask |= type_no_id_mask
+
+    # 9. Building, building_type and building_id belong together (PALM DRV0033 / DRV0034)
+    has_height = model.building_height > FLOAT_FILL
+    height_no_id_mask = has_height & ~has_bld_id
+    n_height_no_id = int(np.count_nonzero(height_no_id_mask))
+    if n_height_no_id:
+        violations.append(
+            f"{n_height_no_id} building cell(s) have no building_id "
+            "(PALM stops with DRV0034)."
+        )
+        invalid_mask |= height_no_id_mask
+
+    building_no_type_mask = (has_height | has_bld_id) & ~has_bld_type
+    n_building_no_type = int(np.count_nonzero(building_no_type_mask))
+    if n_building_no_type:
+        violations.append(
+            f"{n_building_no_type} building cell(s) have no building_type "
+            "(PALM stops with DRV0033)."
+        )
+        invalid_mask |= building_no_type_mask
+
+    id_no_building_mask = _id_without_building(model, export_buildings_3d)
+    n_id_no_building = int(np.count_nonzero(id_no_building_mask))
+    if n_id_no_building:
+        if export_buildings_3d:
+            reason = "and no building voxel from the loaded file"
+        else:
+            reason = (
+                "and exist only in buildings_3d (for example bridges). Export "
+                "buildings_3d is switched off, so they are left out of the saved file. "
+                "Switch it on in the Extras menu to keep them"
+            )
+        violations.append(
+            f"{n_id_no_building} cell(s) have a building_id but no building height {reason} "
+            "(PALM would stop with DRV0034)."
+        )
+        invalid_mask |= id_no_building_mask
+
+    # Bridges whose deck reaches the ground block the flow below them
+    bridge_bottom, _bridge_top = model.bridge_extent()
+    blocked_bridge_mask = (bridge_bottom > FLOAT_FILL) & (bridge_bottom <= 0.0)
+    n_blocked_bridge = int(np.count_nonzero(blocked_bridge_mask))
+    if n_blocked_bridge:
+        notes.append(f"{n_blocked_bridge} bridge cells have no free space below the deck.")
+        note_mask |= blocked_bridge_mask
 
     # 8. building_id values must fit in a signed 32-bit integer (1 … 2 147 483 647)
     INT32_MAX = np.iinfo(np.int32).max   # 2 147 483 647
@@ -473,6 +455,8 @@ def validate(model, georef=None):
 
     return {
         "valid": len(violations) == 0,
+        "notes": notes,
         "violations": violations,
         "invalid_mask": invalid_mask,
+        "note_mask": note_mask,
     }

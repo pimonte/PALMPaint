@@ -296,7 +296,14 @@ def _reconstruct_2d(classes, building_id, building_height, building_type, col_id
     )
     lost_buildings = no_building & original_footprint & ~surface_only
 
-    clear_mask = no_building & ~surface_only & ~lost_buildings
+    # Buildings that exist only in buildings_3d (bridges from palm_csd / palmgeo)
+    # have a building_id but no buildings_2d. The 2D filter cannot see them, so
+    # their id / type stay, otherwise PALM stops with DRV0034.
+    only_in_3d = (np.asarray(building_id) > 0) & ~(
+        np.asarray(building_height, dtype=np.float32) > float(float_fill)
+    )
+
+    clear_mask = no_building & ~surface_only & ~lost_buildings & ~only_in_3d
     new_building_height[clear_mask] = float(float_fill)
     new_building_id[clear_mask]     = building_id_fill
     new_building_type[clear_mask]   = int_fill

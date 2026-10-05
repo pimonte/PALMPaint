@@ -153,6 +153,14 @@ class PaintApplication(framework.Framework):
     def get_building_types(self):
         return building_config.BUILDING_CONFIG["types"]
 
+    def get_paintable_building_types(self):
+        """Building types the brush offers, without bridges (only in buildings_3d)."""
+        return {
+            building_type: definition
+            for building_type, definition in self.get_building_types().items()
+            if definition.get("paintable", True)
+        }
+
     def get_building_definition(self, building_type):
         building_types = building_config.BUILDING_CONFIG.get("types", {})
         default_type = gridmodel.GridModel.default_building_type(self.surface_config)
@@ -2181,23 +2189,40 @@ class PaintApplication(framework.Framework):
             ),
         )
 
+    def _validate_model(self):
+        """Validate the model with the current georeference and export settings."""
+        return self.model.validate(georef=self.georef, export_buildings_3d=self.export_buildings_3d)
+
+    def _show_validation_overlay(self, result):
+        """Mark the cells of errors and notes on the map, hide the overlay if there are none."""
+        marked = result["invalid_mask"] | result["note_mask"]
+        self.backend.update_error_overlay(marked)
+        self.backend.set_error_overlay_visible(bool(marked.any()))
+        self._error_overlay_var.set(bool(marked.any()))
+
+    @staticmethod
+    def _notes_text(result):
+        """The validation notes as a paragraph, or an empty string."""
+        if not result.get("notes"):
+            return ""
+        return "\n\nNotes:\n" + "\n".join(
+            f"\u2022 {n}" for n in result["notes"]
+        )
+
     def run_validation(self):
-        """Run surface-layer consistency checks and show results in a dialog."""
-        result = self.model.validate(georef=self.georef)
-        # Always push the latest mask to the backend so it is ready to display.
-        self.backend.update_error_overlay(result["invalid_mask"])
+        """Run the PALM consistency checks and show results in a dialog."""
+        result = self._validate_model()
+        self._show_validation_overlay(result)
         if result["valid"]:
-            # Clear any stale overlay when the project is clean.
-            self.backend.set_error_overlay_visible(False)
-            self._error_overlay_var.set(False)
-            messagebox.showinfo("Validation", "No issues found. The project is consistent.")
+            messagebox.showinfo(
+                "Validation",
+                "No errors found. The project is consistent." + self._notes_text(result),
+            )
         else:
-            self.backend.set_error_overlay_visible(True)
-            self._error_overlay_var.set(True)
             lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
             messagebox.showwarning(
                 "Validation \u2014 issues found",
-                f"{len(result['violations'])} issue(s) detected:\n\n{lines}",
+                f"{len(result['violations'])} issue(s) detected:\n\n{lines}" + self._notes_text(result),
             )
 
     def clean_static_driver(self):
@@ -2206,10 +2231,11 @@ class PaintApplication(framework.Framework):
             "Clean Static Driver",
             (
                 "Apply automatic cleanup rules to the current project?\n\n"
-                "This repairs invalid zt values, removes LAD/BAD inside buildings, clears "
-                "invalid surface and soil assignments, deletes orphaned water parameters, "
-                "fills missing soil types from the surface configuration, and assigns automatic "
-                "building IDs where building_type is set without an ID."
+                "This repairs zt fill values and NaN, removes soil types without vegetation or "
+                "pavement, deletes water parameters outside water "
+                "and building parameters outside buildings, fills missing soil types from the "
+                "surface configuration, and assigns automatic building IDs where building_type "
+                "is set without an ID. Data that PALM accepts stays unchanged."
             ),
         )
         if not proceed:
@@ -2219,20 +2245,15 @@ class PaintApplication(framework.Framework):
         summary = self.model.clean_static_driver()
         self.backend.update_grid(self.nx, self.ny, self.res)
         self.backend.redraw_tree_overlay()
-        result = self.model.validate(georef=self.georef)
-        self.backend.update_error_overlay(result["invalid_mask"])
-        self.backend.set_error_overlay_visible(not result["valid"])
-        self._error_overlay_var.set(not result["valid"])
+        result = self._validate_model()
+        self._show_validation_overlay(result)
         self.dirty = True
 
         lines = [
             f"zt cells repaired to 0.0: {summary['zt_repaired']}",
-            f"LAD/BAD voxels cleared in buildings: {summary['vegetation_voxels_cleared_in_buildings']}",
-            f"Building columns with LAD/BAD cleanup: {summary['vegetation_columns_cleared_in_buildings']}",
-            f"Tree IDs cleared in buildings: {summary['tree_ids_cleared_in_buildings']}",
-            f"Soil cells cleared under water/buildings: {summary['soil_cleared_under_water_or_buildings']}",
-            f"Building cells with surface types cleared: {summary['surface_types_cleared_on_buildings']}",
+            f"Soil cells cleared without vegetation or pavement: {summary['soil_cleared_without_vegetation_or_pavement']}",
             f"Water parameter columns cleared outside water: {summary['water_pars_cleared_outside_water']}",
+            f"Building parameter columns cleared outside buildings: {summary['building_parameters_cleared_outside_buildings']}",
             f"Soil cells filled from surface_config: {summary['soil_filled_from_surface_config']}",
             f"Automatic building IDs assigned: {summary['building_ids_auto_assigned']}",
         ]
@@ -2315,10 +2336,8 @@ class PaintApplication(framework.Framework):
         summary = applied["summary"]
         self.backend.update_grid(self.nx, self.ny, self.res)
         self.backend.redraw_tree_overlay()
-        result = self.model.validate(georef=self.georef)
-        self.backend.update_error_overlay(result["invalid_mask"])
-        self.backend.set_error_overlay_visible(not result["valid"])
-        self._error_overlay_var.set(not result["valid"])
+        result = self._validate_model()
+        self._show_validation_overlay(result)
         self.refresh_coordinate_labels()
         self.dirty = True
 
@@ -2460,13 +2479,14 @@ class PaintApplication(framework.Framework):
             and getattr(self, "_validate_before_save_var", None)
             and self._validate_before_save_var.get()
         ):
-            result = self.model.validate(georef=self.georef)
+            result = self._validate_model()
             if not result["valid"]:
                 lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
                 proceed = messagebox.askokcancel(
                     "Validation \u2014 issues found",
-                    f"{len(result['violations'])} issue(s) detected:\n\n{lines}\n\n"
-                    "Save anyway?",
+                    f"{len(result['violations'])} issue(s) detected:\n\n{lines}"
+                    + self._notes_text(result)
+                    + "\n\nSave anyway?",
                 )
                 if not proceed:
                     return
@@ -2499,6 +2519,13 @@ class PaintApplication(framework.Framework):
                     f"{replaced_pixels} affected pixel(s) were written as asphalt "
                     "(pavement_type = 1)."
                 ),
+            )
+        orphan_cells = int(save_summary.get("building_id_without_building", 0))
+        if show_export_warnings and orphan_cells > 0:
+            messagebox.showwarning(
+                "building_id without building",
+                f"{orphan_cells} cell(s) have a building_id but no building height and "
+                "no building voxel. PALM stops with error DRV0034 at these cells.",
             )
         self.dirty = False
 
@@ -3223,6 +3250,13 @@ class PaintApplication(framework.Framework):
 
         lines = ["Cell info", f"zt: {zt:.2f} m"]
 
+        # A bridge exists only in buildings_3d, the surface below it is the ground
+        deck = self.model.bridge_levels_at(row, col)
+        if deck is not None:
+            lines.append(f"bridge id: {building_id}")
+            levels = ", ".join(f"{bottom:.1f} to {top:.1f}" for bottom, top in deck)
+            lines.append(f"bridge deck: {levels} m")
+
         # Dominant surface content in the same precedence as the renderer:
         # water -> building -> pavement -> vegetation
         if water_type > self.model.INT_FILL:
@@ -3231,7 +3265,7 @@ class PaintApplication(framework.Framework):
             if water_temperature > self.model.FLOAT_FILL:
                 lines.append(f"water temp: {water_temperature:.2f} K")
 
-        elif building_id > self.model.INT_FILL or building_height > 0.0:
+        elif deck is None and (building_id > self.model.INT_FILL or building_height > 0.0):
             lines.append("surface: building")
             lines.append(f"building id: {building_id if building_id > self.model.INT_FILL else '-'}")
             lines.append(
@@ -4044,7 +4078,7 @@ class PaintApplication(framework.Framework):
             width=28,
             values=[
                 f"{building_type} - {definition['label']}"
-                for building_type, definition in sorted(self.get_building_types().items())
+                for building_type, definition in sorted(self.get_paintable_building_types().items())
             ],
         )
         self.building_type_combobox.pack(side="left", padx=5)
@@ -4133,7 +4167,7 @@ class PaintApplication(framework.Framework):
         if hasattr(self, "building_height_var"):
             self.building_height_var.set(self.building_height)
         default_building_type = gridmodel.GridModel.default_building_type(self.surface_config)
-        configured_building_types = set(int(v) for v in self.get_building_types().keys())
+        configured_building_types = set(int(v) for v in self.get_paintable_building_types().keys())
         selection = getattr(self, "building_type_var", None)
         selection_text = "" if selection is None else selection.get()
         try:

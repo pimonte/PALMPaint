@@ -7,6 +7,9 @@ BUILDING_CONFIG = {
         4: {"label": "Non-residential, built before 1950", "display": {"color": "#1f262e"}},
         5: {"label": "Non-residential, built from 1950-2000", "display": {"color": "#29333d"}},
         6: {"label": "Non-residential, built after 2000", "display": {"color": "#343f4c"}},
+        # Written by palm_csd, only in buildings_3d. Shown, but not offered by the
+        # building brush, a solid block from the ground up is not a bridge.
+        7: {"label": "Bridge", "display": {"color": "#d4a017"}, "paintable": False},
     },
     "parameter_dimensions": {
         "building_general_par": 2,

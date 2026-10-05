@@ -73,8 +73,14 @@ def _has_non_fill_values(data, fill_value):
     return bool(np.any(np.isfinite(arr) & (arr > float(fill_value))))
 
 
-def _building_3d_iter(building_id_data, building_height_data, z_data, *, block_rows=64):
-    """Yield buildings_3d slices without materializing the full 3-D volume."""
+def _building_3d_iter(building_id_data, building_height_data, z_data, *, block_rows=64,
+                      kept_columns=None, source_buildings_3d=None):
+    """Yield buildings_3d slices without materializing the full 3-D volume.
+
+    Columns in ``kept_columns`` are copied from ``source_buildings_3d`` (the
+    file's buildings_3d, which also holds bridges), all others are built from
+    buildings_2d.
+    """
     footprint_mask = (building_id_data > 0) & (building_height_data > GridModel.FLOAT_FILL)
     clamped_heights = np.maximum(building_height_data, 0.0)
     for iz, z_val in enumerate(z_data):
@@ -83,6 +89,12 @@ def _building_3d_iter(building_id_data, building_height_data, z_data, *, block_r
                 footprint_mask[start:end, :]
                 & (z_val <= clamped_heights[start:end, :])
             ).astype(np.int8, copy=False)
+            if kept_columns is not None:
+                if iz < source_buildings_3d.shape[0]:
+                    source_block = (np.asarray(source_buildings_3d[iz, start:end, :]) > 0).astype(np.int8)
+                else:
+                    source_block = np.zeros_like(block)
+                block = np.where(kept_columns[start:end, :], source_block, block).astype(np.int8)
             yield iz, start, end, block
 
 
@@ -113,6 +125,16 @@ def SaveModel(
         building_id_data = model.building_id
         building_height_data = model.building_height
         building_type_data = model.building_type
+        # Without buildings_3d, buildings that exist only in 3D (bridges) cannot be
+        # written. Their building_id / building_type are left out of the file,
+        # otherwise PALM stops with DRV0034. The model keeps them.
+        left_out_3d_only_cells = 0
+        if not export_buildings_3d:
+            only_in_3d = model.buildings_only_in_3d()
+            left_out_3d_only_cells = int(np.count_nonzero(only_in_3d))
+            if left_out_3d_only_cells:
+                building_id_data = np.where(only_in_3d, GridModel.BUILDING_ID_FILL, building_id_data)
+                building_type_data = np.where(only_in_3d, GridModel.INT_FILL, building_type_data)
         height_data = model.zt
         water_pars_data = model.water_pars
         street_type_data = model.street_type
@@ -131,6 +153,9 @@ def SaveModel(
         replaced_building_pixel_count = 0
         z_data = None
         reuse_source_buildings_3d = False
+        kept_columns = None
+        # Cells with a building_id but no building voxel, PALM stops there with DRV0034
+        building_id_without_building = 0
 
         print("SAVE NETCDF")
         print(f"Saving to {filename}...")
@@ -139,25 +164,32 @@ def SaveModel(
         coordinates_attr = coordinate_attribute_names(georef)
 
         if export_buildings_3d and np.any(building_id_data > 0):
-            if (
-                source_buildings_3d is not None
-                and source_buildings_3d_z is not None
-                and _arrays_equal(building_height_data, source_buildings_2d)
-                and _arrays_equal(building_id_data, source_building_id)
-                and _arrays_equal(building_type_data, source_building_type)
-            ):
+            kept_columns = GridModel.unchanged_building_columns(
+                building_height_data, building_id_data, building_type_data, resolved_vegetation
+            )
+            if kept_columns is not None and kept_columns.all():
                 reuse_source_buildings_3d = True
                 z_data = np.asarray(source_buildings_3d_z, dtype=np.float32)
             else:
-                footprint_mask = (building_id_data > 0) & (building_height_data > GridModel.FLOAT_FILL)
-                if np.any(footprint_mask):
-                    z_max = float(np.max(np.maximum(building_height_data[footprint_mask], 0.0)))
-                    z_levels = np.arange(0, math.ceil(z_max / vertical_dz) + 1, dtype=np.float32) * vertical_dz
-                    if z_levels.size == 0:
-                        z_levels = np.array([0.0], dtype=np.float32)
-                    if z_levels.size > 1:
-                        z_levels[1:] = z_levels[1:] - 0.5 * vertical_dz
-                    z_data = z_levels.astype(np.float32, copy=False)
+                # Edited columns are built from buildings_2d, unchanged ones keep the file's voxels
+                rebuilt = (building_id_data > 0) & (building_height_data > GridModel.FLOAT_FILL)
+                if kept_columns is not None:
+                    rebuilt &= ~kept_columns
+                z_max = float(np.max(np.maximum(building_height_data[rebuilt], 0.0))) if np.any(rebuilt) else 0.0
+                z_levels = np.arange(0, math.ceil(z_max / vertical_dz) + 1, dtype=np.float32) * vertical_dz
+                if z_levels.size == 0:
+                    z_levels = np.array([0.0], dtype=np.float32)
+                if z_levels.size > 1:
+                    z_levels[1:] = z_levels[1:] - 0.5 * vertical_dz
+                z_data = z_levels.astype(np.float32, copy=False)
+                if kept_columns is not None:
+                    # The file's z levels, extended if an edited building is taller
+                    source_z = np.asarray(source_buildings_3d_z, dtype=np.float32)
+                    if z_data[-1] > source_z[-1]:
+                        extra = z_data[z_data > source_z[-1]]
+                        z_data = np.concatenate([source_z, extra]).astype(np.float32)
+                    else:
+                        z_data = source_z
 
         with Dataset(filename, 'w', format='NETCDF4') as nc_file:
             nc_file.createDimension('x', nx)
@@ -305,11 +337,22 @@ def SaveModel(
                     nc_buildings_3d.units = "1"
                     nc_buildings_3d.lod = np.int32(2)
                     add_grid_mapping(nc_buildings_3d, coordinates_attr)
+                    occupied = np.zeros((ny, nx), dtype=bool)
                     if reuse_source_buildings_3d:
                         _write_3d_variable(nc_buildings_3d, source_buildings_3d)
+                        occupied = np.any(np.asarray(source_buildings_3d) > 0, axis=0)
                     else:
-                        for iz, start, end, block in _building_3d_iter(building_id_data, building_height_data, z_data):
+                        for iz, start, end, block in _building_3d_iter(
+                            building_id_data, building_height_data, z_data,
+                            kept_columns=kept_columns, source_buildings_3d=source_buildings_3d,
+                        ):
                             nc_buildings_3d[iz, start:end, :] = block
+                            occupied[start:end, :] |= block > 0
+                    building_id_without_building = int(np.count_nonzero((building_id_data > 0) & ~occupied))
+                else:
+                    building_id_without_building = int(np.count_nonzero(
+                        (building_id_data > 0) & ~(building_height_data > GridModel.FLOAT_FILL)
+                    ))
 
             if zlad_data is not None:
                 nc_zlad = nc_file.createVariable("zlad", "f4", ("zlad",))
@@ -400,6 +443,8 @@ def SaveModel(
             "deleted_building_ids": deleted_building_ids,
             "deleted_building_count": len(deleted_building_ids),
             "replaced_building_pixel_count": replaced_building_pixel_count,
+            "building_id_without_building": building_id_without_building,
+            "left_out_3d_only_cells": left_out_3d_only_cells,
         }
 
 

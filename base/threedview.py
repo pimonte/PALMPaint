@@ -73,6 +73,8 @@ def _snapshot(model) -> dict:
         'building_type': model.building_type.copy(),
         'building_id': model.building_id.copy(),
     }
+    # Bridges exist only in the file's buildings_3d, their decks hang above the ground
+    snap['bridge_levels'] = model.bridge_levels()
     rv = model.resolved_vegetation
     if rv and 'lad' in rv and rv['lad'] is not None:
         snap['zlad'] = rv['zlad'].copy()
@@ -279,6 +281,75 @@ def _build_building_mesh(snap: dict) -> 'pv.PolyData | None':
 # LAD / vegetation volume mesh
 # ---------------------------------------------------------------------------
 
+def _build_bridge_mesh(snap: dict) -> 'pv.PolyData | None':
+    """Bridge levels as boxes between their bottom and top, above the terrain.
+
+    Every continuous run of voxels in a column is one box, so a column with a
+    deck and a walkway above it keeps the open air in between. Levels lower
+    than dz/2 (top == bottom) are flat for PALM and not drawn. Top and
+    underside are always drawn, the underside keeps the free space below a
+    bridge visible. A side face is skipped where the neighbouring column has
+    the same level, so a deck only shows its outer edges.
+    """
+    rows, cols, bottom, top = snap['bridge_levels']
+    keep = top > bottom
+    if not keep.any():
+        return None
+    rows, cols, bottom, top = rows[keep], cols[keep], bottom[keep], top[keep]
+
+    res = snap['res']
+    zt = snap['zt'].astype(np.float32)
+    x0 = (cols * res).astype(np.float32)
+    x1 = ((cols + 1) * res).astype(np.float32)
+    y0 = (rows * res).astype(np.float32)        # row 0 = south
+    y1 = ((rows + 1) * res).astype(np.float32)
+    z0 = zt[rows, cols] + bottom
+    z1 = zt[rows, cols] + top
+
+    # One integer key per level (column, bottom, top in dm) to find the same
+    # level in the neighbouring column
+    nx = int(snap['nx'])
+    def level_key(r, c):
+        return ((r.astype(np.int64) * nx + c) * 100000 + np.round(bottom * 10).astype(np.int64)) * 100000 \
+            + np.round(top * 10).astype(np.int64)
+    keys = level_key(rows, cols)
+    def exposed(dr, dc):
+        return ~np.isin(level_key(rows + dr, cols + dc), keys)
+
+    everywhere = np.ones(len(rows), dtype=bool)
+    faces_by_side = (
+        (everywhere, (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)),      # top
+        (everywhere, (x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0)),      # bottom
+        (exposed(-1, 0), (x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)),  # south
+        (exposed(1, 0), (x1, y1, z0), (x0, y1, z0), (x0, y1, z1), (x1, y1, z1)),   # north
+        (exposed(0, -1), (x0, y1, z0), (x0, y0, z0), (x0, y0, z1), (x0, y1, z1)),  # west
+        (exposed(0, 1), (x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)),   # east
+    )
+
+    lut = {tid: _color_to_uint8(cfg['display']['color']) for tid, cfg in BUILDING_CONFIG['types'].items()}
+    cell_colors = np.full((len(rows), 3), [150, 150, 150], dtype=np.uint8)
+    btype = snap['building_type'][rows, cols]
+    for tid, color in lut.items():
+        cell_colors[btype == tid] = color
+
+    points, faces, colors = [], [], []
+    offset = 0
+    for mask, *corners in faces_by_side:
+        n = int(mask.sum())
+        if n == 0:
+            continue
+        quad = np.stack([np.column_stack([cx[mask], cy[mask], cz[mask]]) for cx, cy, cz in corners], axis=1)
+        points.append(quad.reshape(n * 4, 3))
+        first = np.arange(n, dtype=np.int32) * 4 + offset
+        faces.append(np.column_stack([np.full(n, 4, dtype=np.int32), first, first + 1, first + 2, first + 3]))
+        colors.append(cell_colors[mask])
+        offset += n * 4
+
+    mesh = pv.PolyData(np.vstack(points).astype(np.float32), np.vstack(faces).ravel())
+    mesh.cell_data['RGB'] = np.vstack(colors)
+    return mesh
+
+
 def _build_lad_mesh(snap: dict) -> 'pv.PolyData | None':
     """Voxel mesh for resolved vegetation (LAD > 0), terrain-offset, semi-transparent.
 
@@ -346,6 +417,7 @@ def _run_plotter(snap: dict) -> None:
     """Build the 3D scene and show the PyVista window (blocking)."""
     ground   = _build_ground_mesh(snap)
     bld_mesh = _build_building_mesh(snap)
+    bridge_mesh = _build_bridge_mesh(snap)
     lad_mesh = _build_lad_mesh(snap)
 
     p = pv.Plotter(title='PALMPaint \u2014 3D View')
@@ -355,6 +427,9 @@ def _run_plotter(snap: dict) -> None:
 
     if bld_mesh is not None:
         p.add_mesh(bld_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
+
+    if bridge_mesh is not None:
+        p.add_mesh(bridge_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
 
     if lad_mesh is not None:
         p.add_mesh(lad_mesh, color='#2d6a0a', opacity=0.55, show_scalar_bar=False)

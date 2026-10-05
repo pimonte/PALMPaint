@@ -546,13 +546,21 @@ class GridModel:
         model._invalidate_building_cache()
         return model
 
+    # The file's building data in a loaded vegetation dict, with the fill value
+    # for new border cells. buildings_3d (and with it the bridges) is kept for
+    # every column whose 2D building data is unchanged, see unchanged_building_columns().
+    _SOURCE_BUILDING_FILLS = {
+        "source_buildings_3d": 0,
+        "source_buildings_2d": FLOAT_FILL,
+        "source_building_id": BUILDING_ID_FILL,
+        "source_building_type": INT_FILL,
+    }
+
     def _padded_rv(self, rv, r, c):
         """Return a copy of a vegetation dict placed at rows r / cols c of this grid.
 
-        Only zlad, lad, bad and tree_id are copied. The source_* building data
-        in a loaded dict still has the old grid size and would break
-        _building_top_z() and the validation, so it is left out.
         New border voxels get 0 (no vegetation), like LoadModel and the tree rebuild.
+        The file's building data moves along, new border cells get fill values.
         """
         out = {"zlad": rv.get("zlad"), "lad": None, "bad": None, "tree_id": None}
         for key in ("lad", "bad", "tree_id"):
@@ -562,18 +570,37 @@ class GridModel:
                                             src.dtype, fill_value=0, name_prefix=key)
                 dst[:, r, c] = src
                 out[key] = dst
+        self._copy_source_buildings(rv, out)
+        for key, fill in self._SOURCE_BUILDING_FILLS.items():
+            src = rv.get(key)
+            if src is not None:
+                src = np.asarray(src)
+                dst = np.full(src.shape[:-2] + (self.ny, self.nx), fill, dtype=src.dtype)
+                dst[..., r, c] = src
+                out[key] = dst
         return out
+
+    @staticmethod
+    def _copy_source_buildings(rv, out):
+        """Copy the grid-independent entries of the file's building data."""
+        for key in ("source_has_buildings_3d", "source_buildings_3d_z"):
+            out[key] = rv.get(key)
 
     def _cropped_rv(self, rv, r, c):
         """Return a copy of a vegetation dict cut to rows r / cols c.
 
-        Same keys as _padded_rv(), for the same reason.
+        Same keys as _padded_rv().
         """
         out = {"zlad": rv.get("zlad"), "lad": None, "bad": None, "tree_id": None}
         for key in ("lad", "bad", "tree_id"):
             src = rv.get(key)
             if src is not None:
                 out[key] = self.materialize_storage(src[:, r, c], name_prefix=key)
+        self._copy_source_buildings(rv, out)
+        for key in self._SOURCE_BUILDING_FILLS:
+            src = rv.get(key)
+            if src is not None:
+                out[key] = np.array(np.asarray(src)[..., r, c], copy=True)
         return out
 
     def padded(self, n_north, n_south, n_west, n_east):
@@ -798,6 +825,140 @@ class GridModel:
             metadata[key] = source.get(key)
         return metadata
 
+    def buildings_only_in_3d(self):
+        """Cells with a building_id but no buildings_2d: buildings that exist
+        only in the file's buildings_3d, like bridges from palm_csd / palmgeo."""
+        return (self.building_id > 0) & ~(self.building_height > self.FLOAT_FILL)
+
+    def _file_buildings(self):
+        """The vegetation dict that holds the loaded file's buildings_3d, or None."""
+        for rv in (self.resolved_vegetation, self._loaded_rv):
+            if (rv is not None and rv.get("source_buildings_3d") is not None
+                    and rv.get("source_buildings_3d_z") is not None):
+                return rv
+        return None
+
+    def _bridge_voxels(self, rows=slice(None), cols=slice(None)):
+        """File voxels and z levels of buildings that exist only in buildings_3d.
+
+        Returns (occupied, z) with occupied of shape (nz, ...) or None.
+        """
+        only_in_3d = self.buildings_only_in_3d()[rows, cols]
+        source = self._file_buildings()
+        if source is None or not np.any(only_in_3d):
+            return None
+        kept = self.unchanged_building_columns(
+            self.building_height, self.building_id, self.building_type, source
+        )
+        if kept is None:
+            return None
+        occupied = (np.asarray(source["source_buildings_3d"][:, rows, cols]) > 0) & (only_in_3d & kept[rows, cols])
+        return occupied, np.asarray(source["source_buildings_3d_z"], dtype=np.float32)
+
+    @staticmethod
+    def _deck_edges(occupied, z, dz):
+        """Lowest and highest voxel edge in m above ground, FLOAT_FILL where empty.
+
+        z[0] = 0 is the ground level, voxel k >= 1 spans z[k] - dz/2 to z[k] + dz/2.
+        A bridge only at k = 0 is lower than dz/2, PALM treats it as flat.
+        """
+        has = np.any(occupied, axis=0)
+        k_low = np.argmax(occupied, axis=0)
+        k_high = occupied.shape[0] - 1 - np.argmax(occupied[::-1], axis=0)
+        bottom = np.where(k_low > 0, z[k_low] - 0.5 * dz, 0.0)
+        top = np.where(k_high > 0, z[k_high] + 0.5 * dz, 0.0)
+        fill = GridModel.FLOAT_FILL
+        return np.where(has, bottom, fill).astype(np.float32), np.where(has, top, fill).astype(np.float32)
+
+    def bridge_extent(self):
+        """(bottom, top) in m above ground of every bridge deck, FLOAT_FILL elsewhere.
+
+        Bridges are buildings that exist only in the file's buildings_3d, see
+        buildings_only_in_3d(). Their height is taken from those voxels.
+        """
+        bottom = np.full((self.ny, self.nx), self.FLOAT_FILL, dtype=np.float32)
+        top = bottom.copy()
+        voxels = self._bridge_voxels()
+        if voxels is None:
+            return bottom, top
+        occupied, z = voxels
+        return self._deck_edges(occupied, z, self.dz)
+
+    @staticmethod
+    def _voxel_runs(occupied, z, dz):
+        """Continuous vertical runs of occupied voxels, one entry per run.
+
+        Returns (rows, cols, bottom, top) arrays, bottom / top in m above ground.
+        A column can hold several runs, e.g. a deck and a walkway above it.
+        """
+        nz = occupied.shape[0]
+        below = np.concatenate([np.zeros_like(occupied[:1]), occupied[:-1]])
+        above = np.concatenate([occupied[1:], np.zeros_like(occupied[:1])])
+        k_start, r_start, c_start = np.nonzero(occupied & ~below)
+        k_end, r_end, c_end = np.nonzero(occupied & ~above)
+        # np.nonzero sorts by k first, re-sort both by column, then height
+        order_s = np.lexsort((k_start, c_start, r_start))
+        order_e = np.lexsort((k_end, c_end, r_end))
+        k_start, rows, cols = k_start[order_s], r_start[order_s], c_start[order_s]
+        k_end = k_end[order_e]
+        bottom = np.where(k_start > 0, z[k_start] - 0.5 * dz, 0.0).astype(np.float32)
+        top = np.where(k_end > 0, z[np.minimum(k_end, nz - 1)] + 0.5 * dz, 0.0).astype(np.float32)
+        return rows, cols, bottom, top
+
+    def bridge_levels(self):
+        """Every bridge level as (rows, cols, bottom, top), in m above ground."""
+        voxels = self._bridge_voxels()
+        if voxels is None:
+            empty = np.zeros(0, dtype=np.int64)
+            return empty, empty, empty.astype(np.float32), empty.astype(np.float32)
+        occupied, z = voxels
+        return self._voxel_runs(occupied, z, self.dz)
+
+    def bridge_levels_at(self, row, col):
+        """List of (bottom, top) in m above ground of the bridge levels at one cell, or None."""
+        voxels = self._bridge_voxels(slice(row, row + 1), slice(col, col + 1))
+        if voxels is None or not np.any(voxels[0]):
+            return None
+        _rows, _cols, bottom, top = self._voxel_runs(voxels[0], voxels[1], self.dz)
+        return [(float(b), float(t)) for b, t in zip(bottom, top)]
+
+    def bridge_extent_at(self, row, col):
+        """(bottom, top) in m above ground of the bridge deck at one cell, or None."""
+        voxels = self._bridge_voxels(slice(row, row + 1), slice(col, col + 1))
+        if voxels is None:
+            return None
+        bottom, top = self._deck_edges(voxels[0], voxels[1], self.dz)
+        if bottom[0, 0] <= self.FLOAT_FILL:
+            return None
+        return float(bottom[0, 0]), float(top[0, 0])
+
+    @staticmethod
+    def unchanged_building_columns(building_height, building_id, building_type, source):
+        """Columns whose 2D building data still equals the loaded file, as a (ny, nx) mask.
+
+        In these columns the file's buildings_3d is still valid and is kept, so
+        buildings that exist only in 3D (bridges) survive edits elsewhere.
+        Returns None if the file had no buildings_3d.
+        """
+        if source is None:
+            return None
+        source_3d = source.get("source_buildings_3d")
+        if source_3d is None or source.get("source_buildings_3d_z") is None:
+            return None
+        pairs = (
+            (building_height, source.get("source_buildings_2d")),
+            (building_id, source.get("source_building_id")),
+            (building_type, source.get("source_building_type")),
+        )
+        kept = np.ones(np.shape(building_height), dtype=bool)
+        for current, original in pairs:
+            if original is None or np.shape(original) != np.shape(current):
+                return None
+            kept &= np.asarray(current) == np.asarray(original)
+        if np.shape(source_3d)[1:] != kept.shape:
+            return None
+        return kept
+
     def _building_top_z(self):
         """Return the top occupied z value per building column, or FLOAT_FILL."""
         if self._building_top_cache is not None:
@@ -805,19 +966,19 @@ class GridModel:
 
         top_z = np.full((self.ny, self.nx), self.FLOAT_FILL, dtype=np.float32)
         source = self.resolved_vegetation if self.resolved_vegetation is not None else self._loaded_rv
-        source_buildings_3d = None if source is None else source.get("source_buildings_3d")
-        source_buildings_3d_z = None if source is None else source.get("source_buildings_3d_z")
-        if source_buildings_3d is not None and source_buildings_3d_z is not None:
-            z3d = np.asarray(source_buildings_3d_z, dtype=np.float32)
-            for iz, z_val in enumerate(z3d):
-                occupied_layer = np.asarray(source_buildings_3d[iz]) > 0
-                if np.any(occupied_layer):
-                    top_z[occupied_layer] = z_val
-            self._building_top_cache = top_z
-            return self._building_top_cache
-
+        # Edited columns from buildings_2d, unchanged ones from the file's buildings_3d
         valid_heights = self.building_height > self.FLOAT_FILL
         top_z[valid_heights] = self.building_height[valid_heights]
+        kept = self.unchanged_building_columns(
+            self.building_height, self.building_id, self.building_type, source
+        )
+        if kept is not None:
+            top_z[kept] = self.FLOAT_FILL
+            z3d = np.asarray(source["source_buildings_3d_z"], dtype=np.float32)
+            for iz, z_val in enumerate(z3d):
+                occupied_layer = (np.asarray(source["source_buildings_3d"][iz]) > 0) & kept
+                if np.any(occupied_layer):
+                    top_z[occupied_layer] = z_val
         self._building_top_cache = top_z
         return self._building_top_cache
 
@@ -1142,23 +1303,26 @@ class GridModel:
             "building_type_changed": type_changed,
         }
 
-    def validate(self, georef=None):
-        """Check surface-layer consistency rules.
+    def validate(self, georef=None, export_buildings_3d=True):
+        """Check the model against the rules PALM applies to a static driver.
 
-        Delegates to :func:`base.validation.validate` — see that module for
+        Delegates to :func:`base.validation.validate`, see that module for
         the full rule documentation.
 
         Parameters
         ----------
         georef : GeoReference or None, optional
             If supplied, coordinate-range checks (DRV0001) are also run.
+        export_buildings_3d : bool, optional
+            Whether buildings_3d is saved (bridges need it).
 
         Returns
         -------
-        dict with keys 'valid' (bool) and 'violations' (list of str).
+        dict with keys 'valid' (bool), 'violations' (errors), 'notes' (hints)
+        and 'invalid_mask'.
         """
         from base.validation import validate as _validate
-        return _validate(self, georef=georef)
+        return _validate(self, georef=georef, export_buildings_3d=export_buildings_3d)
 
     def clean_static_driver(self):
         """Clean common static-driver inconsistencies in-place."""
@@ -1330,7 +1494,8 @@ class GridModel:
         """Derive display colour from layer data.
 
         Priority order:
-          water > building > pavement > vegetation > bare soil
+          bridge > water > building > pavement > vegetation > bare soil
+        A bridge (building only in buildings_3d) is drawn on top, like on a map.
         """
         if view_mode == "heightmap":
             return self.get_height_color(row, col, z_min=z_min, z_step=z_step, levels=levels)
@@ -1346,7 +1511,12 @@ class GridModel:
             "vegetation", "pavement", "water", "building"
         }
 
-        if "water" in visible_layers and self.water_type[row, col] > self.INT_FILL:
+        is_bridge = (
+            self.building_id[row, col] > 0 and not self.building_height[row, col] > self.FLOAT_FILL
+        )
+        if "building" in visible_layers and is_bridge:
+            base = self.get_building_color(row, col)
+        elif "water" in visible_layers and self.water_type[row, col] > self.INT_FILL:
             base = self.get_water_color(row, col)
         elif (
             "building" in visible_layers
@@ -1503,7 +1673,7 @@ class GridModel:
         Vectorised equivalent of calling :meth:`get_color` for every cell.
         Layer priority is identical to :meth:`get_color`:
 
-            water > building > pavement > vegetation > bare soil (white)
+            bridge > water > building > pavement > vegetation > bare soil (white)
 
         Parameters mirror those of :meth:`get_color`.
         """
@@ -1575,9 +1745,18 @@ class GridModel:
                 color = defn.get("display", {}).get("color", "black")
                 arr[building_mask & (self.building_type == int(type_id))] = _hx(color)
 
-        # Priority 4 (highest): water
+        # Priority 4: water
         if "water" in visible_layers:
             self._apply_water_to_array(arr)
+
+        # Priority 5 (highest): bridges, on top of the water or road below them
+        if "building" in visible_layers:
+            bridge_mask = self.buildings_only_in_3d()
+            if np.any(bridge_mask):
+                arr[bridge_mask] = default_building_color
+                for type_id, defn in BUILDING_CONFIG.get("types", {}).items():
+                    color = defn.get("display", {}).get("color", "black")
+                    arr[bridge_mask & (self.building_type == int(type_id))] = _hx(color)
 
         # Irrigation overlay (applied on top of all surface layers)
         if "irrigation" in visible_layers:
