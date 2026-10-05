@@ -15,6 +15,7 @@ import copy
 import numpy as np
 from base import array_store
 from base.building_config import BUILDING_CONFIG, default_building_type
+from base.surface_config import VEGETATION_PARAMETERS
 
 # ---------------------------------------------------------------------------
 # CSS3 / X11 named colour → (R, G, B) lookup table.
@@ -335,6 +336,11 @@ class GridModel:
         self.ssws = np.full((ny, nx), self.FLOAT_FILL, dtype=np.float32)
 
         self.water_pars = np.full((7, ny, nx), self.FLOAT_FILL, dtype=np.float32)
+        # Per-cell overrides of the vegetation_type defaults (PALM LSM), see VEGETATION_PARAMETERS
+        self.vegetation_pars = self.allocate_storage(
+            (len(VEGETATION_PARAMETERS), ny, nx), np.float32, fill_value=self.FLOAT_FILL,
+            name_prefix="vegetation_pars",
+        )
         self.building_pars = {}
         for name, dim_names in self.BUILDING_PARAMETER_SPECS:
             arr = self.allocate_storage(
@@ -459,6 +465,7 @@ class GridModel:
             "building_height": np.array(self.building_height, copy=True),
             "building_type": np.array(self.building_type, copy=True),
             "water_pars": np.array(self.water_pars, copy=True),
+            "vegetation_pars": np.array(self.vegetation_pars, copy=True),
             "irrigation_flag": np.array(self.irrigation_flag, copy=True),
             "shf":  np.array(self.shf,  copy=True),
             "ssws": np.array(self.ssws, copy=True),
@@ -494,6 +501,7 @@ class GridModel:
         model.building_height[:, :] = state["building_height"]
         model.building_type[:, :] = state["building_type"]
         model.water_pars[:, :, :] = state["water_pars"]
+        model.vegetation_pars[:, :, :] = state["vegetation_pars"]
         if "irrigation_flag" in state:
             model.irrigation_flag[:, :] = state["irrigation_flag"]
         if "shf" in state:
@@ -614,6 +622,7 @@ class GridModel:
         new.building_height[r, c] = self.building_height
         new.building_type[r, c]   = self.building_type
         new.water_pars[:, r, c]   = self.water_pars
+        new.vegetation_pars[:, r, c] = self.vegetation_pars
         new.shf[r, c]             = self.shf
         new.ssws[r, c]            = self.ssws
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
@@ -653,6 +662,7 @@ class GridModel:
         new.building_height[:, :] = self.building_height[r, c]
         new.building_type[:, :]   = self.building_type[r, c]
         new.water_pars[:, :, :]   = self.water_pars[:, r, c]
+        new.vegetation_pars[:, :, :] = self.vegetation_pars[:, r, c]
         new.shf[:, :]             = self.shf[r, c]
         new.ssws[:, :]            = self.ssws[r, c]
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
@@ -680,6 +690,10 @@ class GridModel:
     def clear_water_parameters(self, row, col):
         """Reset all water parameters for one pixel."""
         self.water_pars[:, row, col] = self.FLOAT_FILL
+
+    def clear_vegetation_parameters(self, row, col):
+        """Reset all vegetation parameters for one pixel."""
+        self.vegetation_pars[:, row, col] = self.FLOAT_FILL
 
     def clear_shf(self, row, col):
         """Reset shf for one pixel."""
@@ -1253,6 +1267,7 @@ class GridModel:
             "shf":             self.shf,
             "ssws":            self.ssws,
         }
+        old_vegetation_type = int(self.vegetation_type[row, col])
         building_keys = {"building_id", "building_height", "building_type"}
         if any(key in kwargs for key in building_keys):
             self._invalidate_building_cache()
@@ -1297,6 +1312,13 @@ class GridModel:
                 self.street_type[row, col] = int(value)
             elif key == "water_temperature":
                 self.water_pars[0, row, col] = value
+
+        # vegetation_pars belong to the cell's vegetation: kept while the
+        # vegetation type stays, cleared when it changes or goes away
+        if "vegetation_pars" in kwargs:
+            self.vegetation_pars[:, row, col] = kwargs["vegetation_pars"]
+        elif int(self.vegetation_type[row, col]) != old_vegetation_type:
+            self.vegetation_pars[:, row, col] = self.FLOAT_FILL
 
     def discretize_all_heights(self):
         """Apply PALMPaint's dz-based discretization rules to the whole model."""
@@ -1386,6 +1408,7 @@ class GridModel:
             "building_type":   int(self.building_type[row, col]),
 
             "water_temperature": float(self.water_pars[0, row, col]),
+            "vegetation_pars": [float(v) for v in self.vegetation_pars[:, row, col]],
             "irrigation_flag": int(self.irrigation_flag[row, col]),
             "shf":  float(self.shf[row, col]),
             "ssws": float(self.ssws[row, col]),

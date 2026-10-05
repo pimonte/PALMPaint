@@ -53,6 +53,7 @@ WATER_CELL = (2, 2)
 BUILDING_CELL = (5, 5)
 TREE_CELL = (7, 2)
 NEW_TREE_CELL = (2, 9)
+VEGETATION_CELL = (4, 9)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,12 @@ def make_model(nx=12, ny=10, res=2.0):
     r, c = WATER_CELL
     model.set_pixel(r, c, vegetation_type=INT_FILL, soil_type=INT_FILL, water_type=2)
     model.water_pars[0, r, c] = 290.0
+    model.water_pars[1, r, c] = 0.001    # roughness length, all 7 indices must survive
+
+    # per-cell vegetation parameters as palm_csd (LAI) and palmpy (roughness) write them
+    r, c = VEGETATION_CELL
+    model.vegetation_pars[1, r, c] = 2.4
+    model.vegetation_pars[4, r, c] = 0.05
 
     r, c = BUILDING_CELL
     model.set_pixel(r, c, vegetation_type=INT_FILL, soil_type=INT_FILL,
@@ -99,6 +106,8 @@ def assert_same_layers(expected, actual):
     ]
     if not np.array_equal(expected.water_pars, actual.water_pars):
         differing.append("water_pars")
+    if not np.array_equal(expected.vegetation_pars, actual.vegetation_pars):
+        differing.append("vegetation_pars")
     for name in expected.building_pars:
         if not np.array_equal(expected.building_pars[name], actual.building_pars[name]):
             differing.append(name)

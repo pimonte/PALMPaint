@@ -137,6 +137,7 @@ def SaveModel(
                 building_type_data = np.where(only_in_3d, GridModel.INT_FILL, building_type_data)
         height_data = model.zt
         water_pars_data = model.water_pars
+        vegetation_pars_data = model.vegetation_pars
         street_type_data = model.street_type
         irrigation_flag_data = model.irrigation_flag
         shf_data  = model.shf
@@ -223,8 +224,17 @@ def SaveModel(
             else:
                 custom_water_mask = np.zeros((ny, nx), dtype=bool)
 
-            if np.any(custom_water_mask):
+            # The other six water parameters are written wherever they are set on water
+            other_water_pars_mask = water_param_mask & np.any(
+                np.asarray(water_pars_data[1:]) > GridModel.FLOAT_FILL, axis=0
+            )
+            water_pars_out_mask = custom_water_mask | other_water_pars_mask
+            if np.any(water_pars_out_mask):
                 nc_file.createDimension('nwater_pars', 7)
+
+            has_vegetation_pars = bool(np.any(np.asarray(vegetation_pars_data) > GridModel.FLOAT_FILL))
+            if has_vegetation_pars:
+                nc_file.createDimension('nvegetation_pars', vegetation_pars_data.shape[0])
 
             active_building_param_specs = [
                 (name, dim_names)
@@ -412,19 +422,35 @@ def SaveModel(
                 add_grid_mapping(nc_ssws, coordinates_attr)
                 _write_2d_variable(nc_ssws, ssws_data)
 
-            if np.any(custom_water_mask):
+            if np.any(water_pars_out_mask):
                 nc_water_pars = nc_file.createVariable('water_pars', 'f4', ('nwater_pars', 'y', 'x'), fill_value=-9999.0)
                 nc_water_pars.long_name = "grid point specific water parameters"
                 nc_water_pars.units = "see nwater_pars index definition"
                 add_grid_mapping(nc_water_pars, coordinates_attr)
                 nc_water_pars[:, :, :] = nc_water_pars._FillValue
                 for start, end in _row_blocks(ny, block_rows=128):
-                    block_mask = custom_water_mask[start:end, :]
-                    if not np.any(block_mask):
+                    if not np.any(water_pars_out_mask[start:end, :]):
                         continue
-                    block = np.full((7, end - start, nx), -9999.0, dtype=np.float32)
-                    block[0, :, :][block_mask] = np.asarray(water_pars_data[0, start:end, :], dtype=np.float32)[block_mask]
+                    source = np.asarray(water_pars_data[:, start:end, :], dtype=np.float32)
+                    block = np.full(source.shape, -9999.0, dtype=np.float32)
+                    # temperature only where it differs from its type's default
+                    temperature_mask = custom_water_mask[start:end, :]
+                    block[0][temperature_mask] = source[0][temperature_mask]
+                    others = (source[1:] > GridModel.FLOAT_FILL) & water_param_mask[start:end, :]
+                    block[1:][others] = source[1:][others]
                     nc_water_pars[:, start:end, :] = block
+
+            if has_vegetation_pars:
+                nc_vegetation_pars = nc_file.createVariable(
+                    'vegetation_pars', 'f4', ('nvegetation_pars', 'y', 'x'), fill_value=-9999.0
+                )
+                nc_vegetation_pars.long_name = "grid point specific vegetation parameters"
+                nc_vegetation_pars.units = "see nvegetation_pars index definition"
+                add_grid_mapping(nc_vegetation_pars, coordinates_attr)
+                for start, end in _row_blocks(ny, block_rows=128):
+                    nc_vegetation_pars[:, start:end, :] = np.asarray(
+                        vegetation_pars_data[:, start:end, :], dtype=np.float32
+                    )
 
             for name, dim_names in active_building_param_specs:
                 dims = tuple(dim_names) + ("y", "x")

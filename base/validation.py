@@ -75,6 +75,7 @@ def clean_model(model):
         "zt_repaired": 0,
         "soil_cleared_without_vegetation_or_pavement": 0,
         "water_pars_cleared_outside_water": 0,
+        "vegetation_pars_cleared_outside_vegetation": 0,
         "soil_filled_from_surface_config": 0,
         "building_ids_auto_assigned": 0,
         "building_parameters_cleared_outside_buildings": 0,
@@ -102,6 +103,11 @@ def clean_model(model):
     orphan_wp_mask = water_pars_set & ~(model.water_type > model.INT_FILL)
     summary["water_pars_cleared_outside_water"] = int(np.count_nonzero(orphan_wp_mask))
     model.water_pars[:, orphan_wp_mask] = model.FLOAT_FILL
+
+    vegetation_pars_set = np.any(np.asarray(model.vegetation_pars) > model.FLOAT_FILL, axis=0)
+    orphan_vp_mask = vegetation_pars_set & ~(model.vegetation_type > model.INT_FILL)
+    summary["vegetation_pars_cleared_outside_vegetation"] = int(np.count_nonzero(orphan_vp_mask))
+    model.vegetation_pars[:, orphan_vp_mask] = model.FLOAT_FILL
 
     building_param_masks = []
     for name, _dim_names in getattr(model, "BUILDING_PARAMETER_SPECS", ()):
@@ -178,6 +184,7 @@ def validate(model, georef=None, export_buildings_3d=True):
     3. If any surface type is used anywhere, every non-building cell
        must have exactly one of the three types (DRV0021 / DRV0022).
     4. water_pars may only be set on water cells.
+    4b. vegetation_type 0 ("user defined") needs all 12 vegetation_pars (DRV0029).
     5. Vegetation and pavement cells require a soil_type (DRV0023).
     6. On non-building columns with LAD/BAD, a surface type is required.
     7. building_type requires building_id.
@@ -196,6 +203,8 @@ def validate(model, georef=None, export_buildings_3d=True):
     soil_type without vegetation or pavement (water, buildings): PALM ignores
     it, but a clean driver has soil only where there is soil. clean_model()
     removes it.
+    vegetation_pars without vegetation: PALM ignores them (LSM0041),
+    clean_model() removes them.
     Bridge cells whose deck reaches down to the ground: the flow cannot pass
     under them (seen in palmgeo drivers, where the deck height is too low).
 
@@ -275,6 +284,23 @@ def validate(model, georef=None, export_buildings_3d=True):
             f"{n_orphan_wp} cell(s) have water_pars set but no water_type."
         )
         invalid_mask |= orphan_wp_mask
+
+    # 4b. vegetation_pars: ignored by PALM without vegetation (LSM0041), a note.
+    #     vegetation_type 0 ("user defined") needs all of them (DRV0029), an error.
+    vegetation_pars_set = np.asarray(model.vegetation_pars) > FLOAT_FILL
+    orphan_vp_mask = np.any(vegetation_pars_set, axis=0) & ~has_veg
+    n_orphan_vp = int(np.count_nonzero(orphan_vp_mask))
+    if n_orphan_vp:
+        notes.append(f"{n_orphan_vp} cells have vegetation_pars but no vegetation, PALM ignores them.")
+        note_mask |= orphan_vp_mask
+    incomplete_vp_mask = (model.vegetation_type == 0) & ~np.all(vegetation_pars_set, axis=0)
+    n_incomplete_vp = int(np.count_nonzero(incomplete_vp_mask))
+    if n_incomplete_vp:
+        violations.append(
+            f"{n_incomplete_vp} cell(s) with vegetation_type 0 (user defined) do not have "
+            f"all {vegetation_pars_set.shape[0]} vegetation_pars (DRV0029)."
+        )
+        invalid_mask |= incomplete_vp_mask
 
     # 5a. Vegetation / pavement cells need soil_type
     no_soil_mask = (has_veg | has_pav) & (model.soil_type <= INT_FILL)

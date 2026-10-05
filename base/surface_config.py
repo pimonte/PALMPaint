@@ -327,3 +327,22 @@ SURFACE_CONFIG = {
         },
     },
 }
+
+
+# The 12 entries of vegetation_pars (index, name, unit), from PALM's static.yml
+# (dimension nvegetation_pars). A set value replaces the default of the cell's
+# vegetation_type, the fill value keeps the default.
+VEGETATION_PARAMETERS = (
+    ("minimum canopy resistance", "s m-1"),
+    ("leaf area index", "m2 m-2"),
+    ("vegetation coverage", ""),
+    ("canopy resistance coefficient", "hPa-1"),
+    ("roughness length for momentum", "m"),
+    ("roughness length for heat", "m"),
+    ("heat transfer coefficient skin to soil, stable", "W m-2 K-1"),
+    ("heat transfer coefficient skin to soil, unstable", "W m-2 K-1"),
+    ("shortwave fraction transmitted to soil (not implemented)", ""),
+    ("heat capacity of the surface", "J m-2 K-1"),
+    ("albedo type", ""),
+    ("surface emissivity", ""),
+)

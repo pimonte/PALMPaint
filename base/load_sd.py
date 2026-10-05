@@ -10,6 +10,7 @@ import numpy as np
 
 from base.geo_reference import load_georeference
 from base.gridmodel import GridModel
+from base.surface_config import VEGETATION_PARAMETERS
 
 def get_2d_data(nc_file, var_name, ny, nx, fill_value=-127, dtype=None):
     """Load a 2D variable (y, x) or return a filled fallback array."""
@@ -173,6 +174,9 @@ def LoadModel(filename="output.nc", surface_config=None):
 
         # --- parameter stacks / pars ---
         water_pars = get_pars_data(nc_file, "water_pars", 7, ny, nx, fill_value=-9999.0, dtype=np.float32)
+        vegetation_pars = get_pars_data(
+            nc_file, "vegetation_pars", len(VEGETATION_PARAMETERS), ny, nx, fill_value=-9999.0, dtype=np.float32
+        )
         zlad = None
         if "zlad" in nc_file.variables:
             zlad = nc_file.variables["zlad"][:]
@@ -203,6 +207,10 @@ def LoadModel(filename="output.nc", surface_config=None):
         model.building_type[:, :] = bldg_type
         model.zt[:, :] = zt
         model.water_pars[:, :, :] = water_pars
+        # PALM needs exactly 12 vegetation parameters, other counts are reported below
+        vegetation_pars_ok = vegetation_pars.shape == model.vegetation_pars.shape
+        if vegetation_pars_ok:
+            model.vegetation_pars[:, :, :] = vegetation_pars
         model.irrigation_flag[:, :] = irr
         model.shf[:, :]  = shf
         model.ssws[:, :] = ssws
@@ -260,6 +268,10 @@ def LoadModel(filename="output.nc", surface_config=None):
             if name in nc_file.variables and data is None
             and nc_file.variables[name].dimensions != (name,)
         ]
+        if not vegetation_pars_ok:
+            unreadable_3d.append(
+                f"vegetation_pars ({vegetation_pars.shape[0]} parameters, PALM needs {len(VEGETATION_PARAMETERS)})"
+            )
 
         for name, dim_names in GridModel.BUILDING_PARAMETER_SPECS:
             target = model.building_pars[name]
@@ -336,7 +348,7 @@ def Load(filename="output.nc", surface_config=None):
 _SUPPORTED_VARIABLES = {
     "x", "y", "z", "zlad", "crs", "lat", "lon", "E_UTM", "N_UTM",
     "zt", "vegetation_type", "soil_type", "pavement_type", "street_type",
-    "water_type", "water_pars", "irrigation_flag", "shf", "ssws",
+    "water_type", "water_pars", "vegetation_pars", "irrigation_flag", "shf", "ssws",
     "building_id", "building_type", "buildings_2d", "buildings_3d",
     "lad", "bad", "tree_id",
 }

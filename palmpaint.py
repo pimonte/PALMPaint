@@ -83,6 +83,7 @@ from base.geo_reference import (
     uses_default_origin,
 )
 import base.surface_config as surface_config
+from base.surface_config import VEGETATION_PARAMETERS
 import base.welcome_screen as welcome_screen
 
 
@@ -2262,6 +2263,7 @@ class PaintApplication(framework.Framework):
             f"zt cells repaired to 0.0: {summary['zt_repaired']}",
             f"Soil cells cleared without vegetation or pavement: {summary['soil_cleared_without_vegetation_or_pavement']}",
             f"Water parameter columns cleared outside water: {summary['water_pars_cleared_outside_water']}",
+            f"Vegetation parameter columns cleared outside vegetation: {summary['vegetation_pars_cleared_outside_vegetation']}",
             f"Building parameter columns cleared outside buildings: {summary['building_parameters_cleared_outside_buildings']}",
             f"Soil cells filled from surface_config: {summary['soil_filled_from_surface_config']}",
             f"Automatic building IDs assigned: {summary['building_ids_auto_assigned']}",
@@ -3287,6 +3289,10 @@ class PaintApplication(framework.Framework):
         elif vegetation_type > self.model.INT_FILL:
             vegetation_text = self._format_type_label(vegetation_type, self.get_vegetation_definition)
             lines.append(f"surface: vegetation {vegetation_text}")
+            # Per-cell overrides of the type's defaults (vegetation_pars)
+            for (name, unit), value in zip(VEGETATION_PARAMETERS, pixel["vegetation_pars"]):
+                if value > self.model.FLOAT_FILL:
+                    lines.append(f"  {name}: {value:g} {unit}".rstrip())
 
         else:
             lines.append("surface: -")

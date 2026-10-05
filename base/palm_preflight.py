@@ -404,6 +404,7 @@ def apply_filter_sweep(model):
     if np.any(new_building_mask):
         model.soil_type[new_building_mask] = model.INT_FILL
         model.vegetation_type[new_building_mask] = model.INT_FILL
+        model.vegetation_pars[:, new_building_mask] = model.FLOAT_FILL
         model.pavement_type[new_building_mask] = model.INT_FILL
         model.water_type[new_building_mask] = model.INT_FILL
 
