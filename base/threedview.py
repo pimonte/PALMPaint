@@ -351,62 +351,88 @@ def _build_bridge_mesh(snap: dict) -> 'pv.PolyData | None':
 
 
 def _build_lad_mesh(snap: dict) -> 'pv.PolyData | None':
-    """Voxel mesh for resolved vegetation (LAD > 0), terrain-offset, semi-transparent.
+    """Voxel mesh for resolved vegetation (LAD > 0), opaque, outside faces only.
 
-    Each voxel is placed at zt[row, col] + zlad[kz] so trees sit on top of terrain.
+    Canopy level k >= 1 spans zlad[k] - dz/2 to zlad[k] + dz/2 above the local
+    terrain, so level 1 starts at the ground. PALM never reads level 0 (the
+    surface itself, zlad = 0), so it is not drawn. A face is skipped where the
+    neighbouring voxel has LAD too and covers it completely: above and below
+    always, to the side only if both columns stand on the same terrain height.
+    Each face gets the colour of its voxel's LAD value, see _lad_colors().
     """
     if 'lad' not in snap:
         return None
     lad  = snap['lad']   # (nzlad, ny, nx)
-    zlad = snap['zlad']  # (nzlad,)
-    res = float(snap['res'])
-    zt  = snap['zt'].astype(np.float32)
-    nz  = lad.shape[0]
-
-    if nz == 0 or not np.any(lad > 0):
+    zlad = np.asarray(snap['zlad'], dtype=np.float32)
+    if lad.shape[0] < 2:
+        return None
+    filled = lad > 0
+    filled[0] = False
+    if not filled.any():
         return None
 
-    dz_lad = float(zlad[1] - zlad[0]) if nz > 1 else float(snap['dz'])
+    res = float(snap['res'])
+    zt  = snap['zt'].astype(np.float32)
+    dz_lad = float(zlad[2] - zlad[1]) if len(zlad) > 2 else float(2 * zlad[1])
 
-    kz_arr, rows, cols = np.where(lad > 0)
-    N = len(kz_arr)
+    # A side neighbour covers a face only if it stands on the same terrain height
+    same_zt_x = np.abs(zt[:, 1:] - zt[:, :-1]) < 1e-3   # col and col + 1
+    same_zt_y = np.abs(zt[1:, :] - zt[:-1, :]) < 1e-3   # row and row + 1
 
-    x0 = (cols * res).astype(np.float32)
-    x1 = ((cols + 1) * res).astype(np.float32)
-    y0 = (rows * res).astype(np.float32)
-    y1 = ((rows + 1) * res).astype(np.float32)
-    zt_cell = zt[rows, cols]
-    z_bot = (zt_cell + zlad[kz_arr]).astype(np.float32)
-    z_top = (z_bot + dz_lad).astype(np.float32)
+    s, lo, hi = slice(None), slice(None, -1), slice(1, None)
+    faces_by_side = (
+        # covered voxels, covering neighbours, terrain check, corners as (x, y, z) with 0 = low, 1 = high
+        ((lo, s, s), (hi, s, s), None,      ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1))),  # top
+        ((hi, s, s), (lo, s, s), None,      ((0, 1, 0), (1, 1, 0), (1, 0, 0), (0, 0, 0))),  # bottom
+        ((s, hi, s), (s, lo, s), same_zt_y, ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1))),  # south
+        ((s, lo, s), (s, hi, s), same_zt_y, ((1, 1, 0), (0, 1, 0), (0, 1, 1), (1, 1, 1))),  # north
+        ((s, s, hi), (s, s, lo), same_zt_x, ((0, 1, 0), (0, 0, 0), (0, 0, 1), (0, 1, 1))),  # west
+        ((s, s, lo), (s, s, hi), same_zt_x, ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))),  # east
+    )
 
-    def _col3(a, b, c):
-        return np.column_stack([a, b, c]).astype(np.float32)
+    points, faces, colors = [], [], []
+    offset = 0
+    hidden = np.empty_like(filled)
+    for covered, covering, same_zt, corners in faces_by_side:
+        hidden[:] = False
+        hidden[covered] = filled[covering] if same_zt is None else filled[covering] & same_zt
+        kz, rows, cols = np.nonzero(filled & ~hidden)
+        n = len(kz)
+        if n == 0:
+            continue
+        x = (np.stack([cols, cols + 1]) * res).astype(np.float32)   # row 0 = south
+        y = (np.stack([rows, rows + 1]) * res).astype(np.float32)
+        z_mid = zt[rows, cols] + zlad[kz]
+        z = np.stack([z_mid - 0.5 * dz_lad, z_mid + 0.5 * dz_lad]).astype(np.float32)
+        quad = np.stack([np.column_stack([x[i], y[j], z[k]]) for i, j, k in corners], axis=1)
+        points.append(quad.reshape(n * 4, 3))
+        first = np.arange(n, dtype=np.int32) * 4 + offset
+        faces.append(np.column_stack([np.full(n, 4, dtype=np.int32), first, first + 1, first + 2, first + 3]))
+        colors.append(_lad_colors(lad[kz, rows, cols].astype(np.float32)))
+        offset += n * 4
 
-    # 6 faces per voxel (all faces — LAD is sparse so interior waste is acceptable)
-    face_defs = [
-        (_col3(x0, y0, z_top), _col3(x1, y0, z_top), _col3(x1, y1, z_top), _col3(x0, y1, z_top)),  # top
-        (_col3(x0, y1, z_bot), _col3(x1, y1, z_bot), _col3(x1, y0, z_bot), _col3(x0, y0, z_bot)),  # bottom
-        (_col3(x0, y0, z_bot), _col3(x1, y0, z_bot), _col3(x1, y0, z_top), _col3(x0, y0, z_top)),  # south
-        (_col3(x1, y1, z_bot), _col3(x0, y1, z_bot), _col3(x0, y1, z_top), _col3(x1, y1, z_top)),  # north
-        (_col3(x0, y1, z_bot), _col3(x0, y0, z_bot), _col3(x0, y0, z_top), _col3(x0, y1, z_top)),  # west
-        (_col3(x1, y0, z_bot), _col3(x1, y1, z_bot), _col3(x1, y1, z_top), _col3(x1, y0, z_top)),  # east
-    ]
+    mesh = pv.PolyData(np.vstack(points), np.vstack(faces).ravel())
+    mesh.cell_data['RGB'] = np.vstack(colors)
+    return mesh
 
-    all_pts:   list = []
-    all_faces: list = []
-    pt_off = 0
 
-    for p0, p1, p2, p3 in face_defs:
-        pts = np.stack([p0, p1, p2, p3], axis=1).reshape(N * 4, 3)  # (N*4, 3)
-        all_pts.append(pts)
-        base = np.arange(N, dtype=np.int32) * 4 + pt_off
-        fv = np.column_stack([np.full(N, 4, dtype=np.int32), base, base+1, base+2, base+3])
-        all_faces.append(fv)
-        pt_off += N * 4
+# LAD colours: piecewise linear between the stops. In the example drivers (palm_csd,
+# palmgeo, palmpy, PALM test cases) the median voxel is 0.15 to 0.4 m2/m3 and a
+# crown's densest voxel about 0.5, above 1.5 is rare. Above 1.5 a deeper green.
+_LAD_COLOR_STOPS = np.array([0.0, 0.5, 1.5], dtype=np.float32)
+_LAD_COLOR_RAMP  = np.array([[0x80, 0xa7, 0x53],    # 0, light green
+                             [0x4e, 0x8a, 0x33],    # 0.5, middle green
+                             [0x1c, 0x5c, 0x22]],   # 1.5, dark green
+                            dtype=np.float32)
+_LAD_COLOR_ABOVE = np.array([0x10, 0x3d, 0x13], dtype=np.uint8)
 
-    points = np.vstack(all_pts).astype(np.float32)
-    faces  = np.vstack(all_faces).ravel().astype(np.int32)
-    return pv.PolyData(points, faces)
+
+def _lad_colors(values: np.ndarray) -> np.ndarray:
+    """uint8 RGB per voxel, interpolated between _LAD_COLOR_STOPS."""
+    colors = np.column_stack([np.interp(values, _LAD_COLOR_STOPS, _LAD_COLOR_RAMP[:, ch])
+                              for ch in range(3)]).round().astype(np.uint8)
+    colors[values > _LAD_COLOR_STOPS[-1]] = _LAD_COLOR_ABOVE
+    return colors
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +458,8 @@ def _run_plotter(snap: dict) -> None:
         p.add_mesh(bridge_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
 
     if lad_mesh is not None:
-        p.add_mesh(lad_mesh, color='#2d6a0a', opacity=0.55, show_scalar_bar=False)
+        # Opaque, because transparency is the most expensive part of rendering
+        p.add_mesh(lad_mesh, scalars='RGB', rgb=True, show_scalar_bar=False)
 
     p.show_axes()
 
