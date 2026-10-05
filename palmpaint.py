@@ -2398,64 +2398,6 @@ class PaintApplication(framework.Framework):
             confirm=False,
         )
 
-    def run_split_building_ids_tool(self):
-        """Preview and optionally split disconnected building footprints to unique IDs."""
-        preview = self.model.preview_split_building_ids()
-        summary = preview["summary"]
-        preview_lines = [
-            "Preview of building_id split:",
-            "",
-            f"Disconnected building_id groups to split: {summary['building_ids_split_groups']}",
-            f"Additional components to re-ID: {summary['building_ids_split_components']}",
-            f"Cells receiving new IDs: {summary['building_ids_split_cells']}",
-            "",
-            "Apply these changes to the current project?",
-        ]
-        self._run_preview_apply_tool(
-            "Split Building IDs",
-            preview,
-            self.model.apply_split_building_ids,
-            preview_lines,
-            lambda summary, result: [
-                f"Disconnected building_id groups split: {summary['building_ids_split_groups']}",
-                f"Additional components reassigned: {summary['building_ids_split_components']}",
-                f"Cells receiving new IDs: {summary['building_ids_split_cells']}",
-                "",
-                "Validation after ID split: no issues found."
-                if result["valid"]
-                else f"Validation after ID split: {len(result['violations'])} issue(s) remain.",
-            ],
-        )
-
-    def run_align_building_terrain_tool(self):
-        """Preview and optionally align terrain within building groups."""
-        preview = self.model.preview_align_building_terrain()
-        summary = preview["summary"]
-        preview_lines = [
-            "Preview of terrain alignment by building_id:",
-            "",
-            f"zt cells repaired to 0.0: {summary['zt_repaired']}",
-            f"Building groups to terrain-adjust: {summary['terrain_adjusted_groups']}",
-            f"Cells to terrain-adjust: {summary['terrain_adjusted_cells']}",
-            "",
-            "Apply these changes to the current project?",
-        ]
-        self._run_preview_apply_tool(
-            "Align Building Terrain",
-            preview,
-            self.model.apply_align_building_terrain,
-            preview_lines,
-            lambda summary, result: [
-                f"zt cells repaired to 0.0: {summary['zt_repaired']}",
-                f"Building groups terrain-adjusted: {summary['terrain_adjusted_groups']}",
-                f"Cells terrain-adjusted: {summary['terrain_adjusted_cells']}",
-                "",
-                "Validation after terrain alignment: no issues found."
-                if result["valid"]
-                else f"Validation after terrain alignment: {len(result['violations'])} issue(s) remain.",
-            ],
-        )
-
     def _save_project_to_file(
         self,
         filename="quicksave",

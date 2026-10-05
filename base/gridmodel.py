@@ -1395,26 +1395,6 @@ class GridModel:
         from base.palm_preflight import apply_filter_sweep as _apply_filter_sweep
         return _apply_filter_sweep(self)
 
-    def preview_split_building_ids(self):
-        """Preview splitting disconnected building footprints to unique IDs."""
-        from base.palm_preflight import preview_split_building_ids as _preview_split_building_ids
-        return _preview_split_building_ids(self)
-
-    def apply_split_building_ids(self):
-        """Apply splitting disconnected building footprints to unique IDs."""
-        from base.palm_preflight import apply_split_building_ids as _apply_split_building_ids
-        return _apply_split_building_ids(self)
-
-    def preview_align_building_terrain(self):
-        """Preview terrain alignment to PALM's per-building oro_max logic."""
-        from base.palm_preflight import preview_align_building_terrain as _preview_align_building_terrain
-        return _preview_align_building_terrain(self)
-
-    def apply_align_building_terrain(self):
-        """Apply terrain alignment to PALM's per-building oro_max logic."""
-        from base.palm_preflight import apply_align_building_terrain as _apply_align_building_terrain
-        return _apply_align_building_terrain(self)
-
     def get_pixel(self, row, col):
         """Return all data layer values for one pixel as a plain dict."""
         return {

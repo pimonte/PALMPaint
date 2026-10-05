@@ -50,6 +50,9 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - `environment.yml`: added `pillow` (without it, fresh environments silently fell back to the slow Tk backend), conda-forge as the only channel, package name `netcdf4`, `matplotlib` / `pyvista` listed as optional
 - `requirements.txt`: added `pillow`, `matplotlib` / `pyvista` listed as optional
 
+### Removed
+- Dead preflight code: `GridModel.preview_split_building_ids()` / `apply_split_building_ids()` / `preview_align_building_terrain()` / `apply_align_building_terrain()` in `base/gridmodel.py` and `run_split_building_ids_tool()` / `run_align_building_terrain_tool()` in `palmpaint.py`. The functions they called were deleted from `base/palm_preflight.py` in 0.5.0 together with their menu entries (the 0.5.0 entry says they were merged into the vectorised pipeline, but only the hole and cavity filter was), so every call failed with `ImportError` and nothing could reach them. What they tried to do, placing buildings on sloped terrain like PALM's `oro_max` and one ID per separate footprint, is on the roadmap
+
 ---
 ## [0.5.5-alpha] — dev branch (unreleased)
 
