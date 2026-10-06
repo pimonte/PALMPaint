@@ -12,6 +12,8 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 
 First release since 0.2.0. Static drivers stay plain PALM static drivers, so existing files keep loading. The detailed changes are in the alpha entries below.
 
+DOI: [10.5281/zenodo.23192510](https://doi.org/10.5281/zenodo.23192510) (this version), [10.5281/zenodo.23192509](https://doi.org/10.5281/zenodo.23192509) (all versions).
+
 ### What is new since 0.2.0
 - **Painting:** eraser, rectangle, line and ellipse modes, Bucket Fill (asks first), select tool with copy, cut, paste and rotate, layer visibility and locks, heightmap and soil views, undo and redo, autosave.
 - **Trees:** single tree tool with about 90 species, Tree Generator (alpha) with live preview. Trees are written on PALM's vertical levels, and no leaves are placed in or above buildings, like palm_csd.
@@ -21,6 +23,10 @@ First release since 0.2.0. Static drivers stay plain PALM static drivers, so exi
 - **Viewing:** fast drawing with Pillow, Analysis Plots, 3D View with LAD coloured by value.
 - **Large domains:** tested up to 2048 x 2048 cells. `--ram` sets how much RAM PALMPaint uses, larger arrays go into `tmp/`, which is cleaned up after a crash.
 - **Project:** short README with conda and pip installation, `CITATION.cff` for citing, unfinished brushes hidden behind `--experimental`.
+
+### Documentation after the release
+- Zenodo DOI: `doi` (concept DOI 10.5281/zenodo.23192509, always the newest release) and `date-released` in `CITATION.cff`, a DOI badge and a short Cite section in `README.md`
+- README screenshot replaced by the Berlin Tiergarten driver from the palm_csd test data (`Pictures/Screenshot_Berlin.png`), with the attribution its data license dl-de/by-2-0 requires
 
 ---
 ## [0.5.7-alpha] — dev branch (unreleased)
