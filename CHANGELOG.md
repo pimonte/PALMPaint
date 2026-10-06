@@ -8,6 +8,21 @@ The versioning follows [Semantic Versioning](https://semver.org/):
 - **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
 
 ---
+## [0.6.0] — 2026-10-06 (release)
+
+First release since 0.2.0. Static drivers stay plain PALM static drivers, so existing files keep loading. The detailed changes are in the alpha entries below.
+
+### What is new since 0.2.0
+- **Painting:** eraser, rectangle, line and ellipse modes, Bucket Fill (asks first), select tool with copy, cut, paste and rotate, layer visibility and locks, heightmap and soil views, undo and redo, autosave.
+- **Trees:** single tree tool with about 90 species, Tree Generator (alpha) with live preview. Trees are written on PALM's vertical levels, and no leaves are placed in or above buildings, like palm_csd.
+- **Domain:** separate vertical grid spacing dz, Add Border, Crop, Discretize to dz, `buildings_3d` export, georeference with origin, CRS and `origin_z`.
+- **Existing drivers** (palm_csd, palmgeo, palmpy, PALM test cases): bridges, `vegetation_pars` (per-cell LAI), all `water_pars`, foreign fill values and the global attributes (license attribution in `source`) survive a save. A load message names everything PALMPaint cannot keep, and PALMPaint files with the old vertical levels are repaired.
+- **Checks:** Validate follows PALM's own rules (errors only for what PALM rejects, hints as notes, marked on the map), Clean Static Driver, Filter Sweep (PALM's topography filter), and a note when a roughness length is too large for dz.
+- **Viewing:** fast drawing with Pillow, Analysis Plots, 3D View with LAD coloured by value.
+- **Large domains:** tested up to 2048 x 2048 cells. `--ram` sets how much RAM PALMPaint uses, larger arrays go into `tmp/`, which is cleaned up after a crash.
+- **Project:** short README with conda and pip installation, `CITATION.cff` for citing, unfinished brushes hidden behind `--experimental`.
+
+---
 ## [0.5.7-alpha] — dev branch (unreleased)
 
 ### Added
