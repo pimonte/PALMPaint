@@ -3,11 +3,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - numpy=2.2.3
-  - netcdf4=1.7.2
-  - pillow            # fast PIL rendering backend (falls back to slow Tk backend without it)
-  # Optional features: uncomment to enable, or add later to an existing env with
-  #   conda install -n palmpaint_env -c conda-forge matplotlib pyvista
-  # (-c conda-forge is required: pyvista is not on the defaults channel)
+  - numpy
+  - netcdf4
+  - pillow            # fast drawing (falls back to the slow Tk backend without it)
+  # Optional extras, remove the # to install them with the environment:
   # - matplotlib      # Tree Generator preview, Analysis Plots
   # - pyvista         # 3D View
