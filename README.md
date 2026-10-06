@@ -1,8 +1,12 @@
 # PALMPaint
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23192509.svg)](https://doi.org/10.5281/zenodo.23192509)
+
 Paint static drivers for the [PALM](https://www.palm-model.org) model instead of scripting them. Draw buildings, trees, streets and water on a grid, or load an existing driver and edit it.
 
-![PALMPaint](/Pictures/palmpaint_screenshot_small.png)
+![PALMPaint with the Berlin Tiergarten static driver](/Pictures/Screenshot_Berlin.png)
+
+*Berlin Tiergarten driver from the palm_csd test data. Data: Berlin data processed by DLR, [dl-de/by-2-0](https://www.govdata.de/dl-de/by-2-0).*
 
 ## Install
 
@@ -55,6 +59,10 @@ Undo is Ctrl+Z. The select tool shows its keyboard shortcuts in the top bar.
 - Developed and tested on Ubuntu. Windows is untested.
 - Large domains (e.g. 2048 x 2048 cells) work but need memory. Use `--ram` to match your computer.
 - Everything tiny on a high-resolution screen? conda-forge's Python comes with Tk 8.6, which ignores the desktop scaling.
+
+## Cite
+
+If PALMPaint helps your work, please cite it: [10.5281/zenodo.23192509](https://doi.org/10.5281/zenodo.23192509) (all versions) or the DOI of the version you used, listed on Zenodo. GitHub shows the full citation under "Cite this repository".
 
 ## License
 
