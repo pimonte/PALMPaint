@@ -1,7 +1,20 @@
 /.conda_PALMPaint
 /__pycache__
 /base/__pycache__
+/tests/__pycache__
+/.pytest_cache
 quicksave
+quicksave*
 /palmpaint_venv
 /Files
-/Architektur_Idee.txt
+
+# Test & temporary files
+/tmp
+*.nc
+*.zip
+report.txt
+test
+
+# Python virtual environments
+/venv
+/.venv

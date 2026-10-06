@@ -1,9 +1,11 @@
 name: palmpaint_env
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python=3.12
-  - numpy=2.2.3
-  - netCDF4=1.7.2
-  
+  - numpy
+  - netcdf4
+  - pillow            # fast drawing (falls back to the slow Tk backend without it)
+  # Optional extras, remove the # to install them with the environment:
+  # - matplotlib      # Tree Generator preview, Analysis Plots
+  # - pyvista         # 3D View

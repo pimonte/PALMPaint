@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use PALMPaint in your work, please cite it as below."
+type: software
+title: "PALMPaint"
+abstract: >-
+  PALMPaint is a pixel-painting tool for creating and editing static drivers
+  for the PALM model system. Buildings, trees, streets and water are painted
+  on a grid, and existing static drivers can be loaded, checked against
+  PALM's rules and edited.
+authors:
+  - given-names: Pierre
+    family-names: Lampe
+    orcid: "https://orcid.org/0009-0004-2849-5778"
+version: "0.6.0"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/pimonte/PALMPaint"
+keywords:
+  - PALM
+  - large-eddy simulation
+  - static driver
+  - urban climate
+  - NetCDF

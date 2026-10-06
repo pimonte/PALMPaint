@@ -1,0 +1,375 @@
+# Changelog
+
+All notable changes to PALMPaint are documented here.
+
+The versioning follows [Semantic Versioning](https://semver.org/):
+- **dev branch** → `MAJOR.MINOR.PATCH-alpha.N` — work in progress, untested
+- **main branch** → `MAJOR.MINOR.PATCH-beta.N` — merged and manually verified
+- **Release** → `MAJOR.MINOR.PATCH` — stable, fully tested
+
+---
+## [0.6.0] — 2026-10-06 (release)
+
+First release since 0.2.0. Static drivers stay plain PALM static drivers, so existing files keep loading. The detailed changes are in the alpha entries below.
+
+### What is new since 0.2.0
+- **Painting:** eraser, rectangle, line and ellipse modes, Bucket Fill (asks first), select tool with copy, cut, paste and rotate, layer visibility and locks, heightmap and soil views, undo and redo, autosave.
+- **Trees:** single tree tool with about 90 species, Tree Generator (alpha) with live preview. Trees are written on PALM's vertical levels, and no leaves are placed in or above buildings, like palm_csd.
+- **Domain:** separate vertical grid spacing dz, Add Border, Crop, Discretize to dz, `buildings_3d` export, georeference with origin, CRS and `origin_z`.
+- **Existing drivers** (palm_csd, palmgeo, palmpy, PALM test cases): bridges, `vegetation_pars` (per-cell LAI), all `water_pars`, foreign fill values and the global attributes (license attribution in `source`) survive a save. A load message names everything PALMPaint cannot keep, and PALMPaint files with the old vertical levels are repaired.
+- **Checks:** Validate follows PALM's own rules (errors only for what PALM rejects, hints as notes, marked on the map), Clean Static Driver, Filter Sweep (PALM's topography filter), and a note when a roughness length is too large for dz.
+- **Viewing:** fast drawing with Pillow, Analysis Plots, 3D View with LAD coloured by value.
+- **Large domains:** tested up to 2048 x 2048 cells. `--ram` sets how much RAM PALMPaint uses, larger arrays go into `tmp/`, which is cleaned up after a crash.
+- **Project:** short README with conda and pip installation, `CITATION.cff` for citing, unfinished brushes hidden behind `--experimental`.
+
+---
+## [0.5.7-alpha] — dev branch (unreleased)
+
+### Added
+- `CITATION.cff` (Citation File Format 1.2.0): title, abstract, author with ORCID, version 0.6.0, license GPL-3.0-or-later, repository and keywords. GitHub shows it as "Cite this repository" and Zenodo uses it for the DOI record
+- Validation note when a roughness length is too large for the grid: PALM stops with LSM0048 where z0 >= dz/4 or z0h >= dz/2 (0.5 and 1 x the height of the first grid level above the surface, `lsm_init` in `land_surface_model_mod.f90`), unless `allow_roughness_limitation = .T.` is set in the namelist. Forests (z0 = 2 m) stop PALM on grids up to dz = 8 m. New `roughness_too_large()` in `base/validation.py` takes z0 from `vegetation_pars` / `water_pars` where set, otherwise PALM's defaults (new `PALM_VEGETATION_ROUGHNESS` and `PALM_PAVEMENT_ROUGHNESS` in `base/surface_config.py`, from PALM's tables), and marks the cells on the map. Found in the Hannover, London and palmgeo example drivers. Test `test_forest_roughness_too_large_for_the_grid_is_noted`
+- `vegetation_pars`: the 12 per-cell vegetation parameters of PALM's land surface model (index 1 leaf area index, index 4 roughness length and so on, names and units in the new `VEGETATION_PARAMETERS` in `base/surface_config.py`). palm_csd and palmgeo write the measured LAI of every grass and shrub cell there, palmpy the roughness length, 11 of the example drivers use it (Hannover 2048: about one million cells). PALMPaint dropped it on every save, so PALM silently used the default LAI of each vegetation type. New array `GridModel.vegetation_pars` (12, ny, nx) through `allocate_storage()`, carried through `export_state()` / `from_state()`, `padded()` / `cropped()`, `get_pixel()` / `set_pixel()` (so paste copies it) and `clear_vegetation_parameters()`. Loaded and saved with all 12 indices by `LoadModel()` / `SaveModel()` (a file with another count is reported as unreadable, PALM needs exactly 12). The parameters belong to the cell's vegetation: `set_pixel()` keeps them while the vegetation type stays and clears them when it changes or goes away (other vegetation, pavement, water, building, eraser), `apply_filter_sweep()` clears them on new building cells. `validate()` notes parameters on cells without vegetation (PALM ignores them, LSM0041) and reports `vegetation_type` 0 without all 12 parameters as an error (DRV0029), `clean_model()` removes parameters outside vegetation. The cell info lists every set parameter with name and unit. All 11 drivers save their `vegetation_pars` back identical. Tests in the new `tests/test_vegetation_pars.py`, and the round trips in `tests/test_roundtrip.py` now include a cell with LAI and roughness length
+
+### Fixed
+- Saving dropped the file's global attributes, including `source`, which holds the attribution the data licenses require (OpenStreetMap, Copernicus, OGL in the palmgeo and London drivers), and always wrote `title` "Idealized Scenario" and `author` "PALM User". `LoadModel()` in `base/load_sd.py` now keeps all global attributes in the new `GridModel.file_attributes`, carried through `export_state()` / `from_state()` and `padded()` / `cropped()`, and the new `_write_file_attributes()` in `base/create_sd.py` writes them back first. Origin and rotation from the georeference still win, a global `epsg_code` follows a CRS changed in Change Origin, `title` and `author` get the defaults only when the file has none. All 19 example drivers keep every attribute. Test `test_global_attributes_survive_save_border_crop_and_undo`
+- With Tk 8.6 (conda-forge environments) the layer options (Show / Lock, background maps, Export buildings_3d) appeared in the File menu. The menu bar was created without `tearoff=0`, so Tk 8.6 put a tear-off entry at position 0 and `entrycget(1)` returned File instead of View, Tk 9 has no tear-off entry by default. `build_menu()` in `base/framework.py` now creates the menu bar with `tearoff=0` and strips the labels, and the new `PaintApplication._menu_by_label()` finds View and Extras by name instead of position
+- Heightmap and soil view: clicks were handled by the landcover tool first. With `select` as the last landcover tool nothing happened, in rectangle, line or ellipse mode the release painted the landcover tool, so the soil view painted vegetation over water and buildings. `on_mouse_button_pressed()`, `on_mouse_button_pressed_motion()` and `on_mouse_button_released()` in `palmpaint.py` now send every click in these views to `execute_selected_method()` (zt tools, soil tool) before looking at selection or shape modes
+- Water cells lost their temperature after loading when it was the default of their water type: the cell info showed none and Select By offered no "Same water temperature". `SaveModel` writes only temperatures that differ from the default, which is correct for PALM. The new `GridModel.fill_default_water_temperatures()`, called by `LoadModel()`, gives these cells their type's default again (283 K for all five types, as in PALM's `water_pars` table). Test `test_default_water_temperature_is_back_after_load`
+- Strange symbols (apples, copyright signs) in labels, dialogs and the 3D window title. The Tk 9 of Anaconda's channel uses X core fonts without Xft, which have no glyphs for characters like `²`, `⁻¹`, `–`, `→` or `×` and fall back to symbol fonts, and the X window title of the 3D view cannot show the long dash. All string literals in `palmpaint.py` and `base/` now use plain keyboard characters (`m2 m-3`, `s-1`, `-`, `to`, `x`), comments and docstrings unchanged
+- Tree Generator preview crashed with matplotlib 3.9 and newer: `matplotlib.cm.get_cmap()` was removed. `_update_preview()` in `base/tree_generator_dialog.py` now uses `matplotlib.colormaps`
+- Windows and boxes too small on screens with desktop scaling (e.g. 200 %): with Tk 9 the text grows, sizes in plain pixels did not. New `PaintApplication.px()` scales a 96 dpi pixel size to the screen and is used for the cell info box, line wrapping, the height legend and the progress bar. Autosave Settings and Change Origin no longer have a fixed window size and grow with their content (Autosave Settings needs 657 x 388 px at 200 %, it was fixed at 360 x 220)
+- Shift+R did not rotate the clipboard by 1 degree, only `<r>` was bound. `bind_shortcuts()` now also binds `<R>`
+- `SaveModel()` wrote only index 0 of `water_pars` (water temperature) and dropped the other six (roughness lengths, heat transfer coefficients, albedo type, emissivity) without a word. They are now written wherever they are set on water cells, the temperature as before only where it differs from its type's default
+- 3D view: walls were missing where two buildings, or two parts of one building, of different height stand side by side, so the view showed holes. `_build_building_mesh()` in `base/threedview.py` drew a side wall only next to a cell without a building. The new `_building_wall_spans()` computes the visible part of every side wall: from the neighbour's roof up to the cell's own roof (the neighbour stands on solid ground and covers everything below its roof), down to the own ground next to a cell without a building, and nothing next to a building at least as tall. This draws every step and still leaves out every hidden wall (`palmgeo/hannover_1024_static`: building mesh 0.82 million faces, built in 0.1 s). Tests in the new `tests/test_threedview.py`
+
+### Changed
+- `README.md` rewritten, short: what PALMPaint does, installation with conda or pip, the optional extras (matplotlib for the Tree Generator preview and Analysis Plots, pyvista for the 3D View), the command line options (`--ram`, `--backend`, `--experimental`) what to know (Ubuntu only, large domains, tiny UI with Tk 8.6) and a no-warranty notice in the License section (the `LICENSE` file stays the unchanged GPLv3 text, which already excludes warranty in sections 15 and 16). The wrong statements are gone (projects in JSON format, NumPy as the only dependency). The detailed tree documentation moved to the new `docs/trees.md`
+- `environment.yml` (conda-forge) no longer pins numpy and netCDF4 to exact versions and lists matplotlib and pyvista as optional extras to uncomment. The README installs them with `conda install -c conda-forge`, pip as the alternative
+- `requirements.txt` uses minimum versions (`numpy>=2.0`, `netCDF4>=1.7`, `pillow>=10.0`) instead of exact pins, numpy 2.2.3 has no packages for Python 3.14
+- Bucket Fill asks before filling the whole domain and names what it fills (`_bucket_fill_description()` in `palmpaint.py`), "No" is the default and leaves no undo step. In the heightmap view and with tools that have no fill it explains where it works instead of doing nothing
+- The View menu lists the layers of the parked brushes (`irrigation`, `shf`, `ssws`) only with `--experimental` (new `_PARKED_LAYERS`), their data is still loaded, shown and saved
+- Select tool: the hint for copy, cut and paste stays visible while cells are selected. In paste mode the top bar shows how to place, rotate (R: 15 deg, Shift+R: 1 deg) and cancel (Esc), with the current angle (`_show_paste_hint()`, `_leave_paste_hint()`)
+- 3D view: back-face culling for the ground, buildings, bridges and LAD (`culling='back'` in `_run_plotter()`), the GPU skips faces turned away from the camera. All meshes put their corners anticlockwise seen from outside, a new test checks that every face of every mesh points outwards. Hannover 1024 (3.94 million faces, off-screen 1600 x 900): 38 to 41 ms per frame without, 32 to 33 ms with back-face culling
+- Version 0.5.7-alpha (`base/version.py`)
+
+---
+## [0.5.6-alpha] - dev branch (unreleased)
+
+### Added
+- **Test suite** (`tests/`, `pytest.ini`): headless pytest tests. Round trips `SaveModel` to `LoadModel`, `export_state()` to `from_state()` and `padded()` to `cropped()` compare every 2D layer, `water_pars` and all building parameters. Regression tests for Add Border / Crop with single trees
+- `requirements-dev.txt`: development dependencies (`pytest`)
+- Bridges with several levels: a column can hold a deck and a walkway above it with open air in between. New `GridModel.bridge_levels()` / `bridge_levels_at()` and `_voxel_runs()` in `base/gridmodel.py` return every continuous run of voxels, the 3D view draws each run as its own box (side faces only where the neighbouring column has a different level) and the cell info lists all levels (`bridge deck: 8.0 to 10.0, 43.0 to 47.0 m`)
+- Bridges are visible. palm_csd (with input from palmgeo) writes a bridge as a slab in `buildings_3d` below the deck top, with `building_type` 7 and no `buildings_2d`, so PALMPaint showed nothing. The 3D view now draws the decks from the file's voxels (`_build_bridge_mesh()` in `base/threedview.py`), the 2D map draws them on top of the water or road below (`get_color()` / `get_color_array_rgb()` in `base/gridmodel.py`), and the cell info shows the bridge ID and the deck height (0.0 to 0.0 m for decks lower than dz/2, which PALM treats as flat). New `GridModel.bridge_extent()` / `bridge_extent_at()`. Building type 7 "Bridge" in `base/building_config.py`, marked `paintable: False`, so the building brush does not offer it (`get_paintable_building_types()` in `palmpaint.py`)
+- Warning on load when the file contains variables PALMPaint does not save. Before, they were dropped silently on the next save (e.g. `surface_fraction`, `street_crossing` or `tree_type` from `palm_csd` drivers). New `find_unsupported_variables()` and the set `_SUPPORTED_VARIABLES` in `base/load_sd.py`, the dialog is shown by `load_project_netcdf_from_path()` in `palmpaint.py`. Interim until the Phase 1 pass-through. Test in `tests/test_load.py`
+
+### Fixed
+- `GridModel.padded()` / `cropped()`: crashed with `AttributeError` when single trees were placed, because tree records are dicts but were accessed as attributes. Add Border and Crop now work with trees and shift the tree records correctly
+- `LoadModel()` now sets `next_tree_id` after the highest loaded tree ID, so new trees never reuse an ID from the file. Previously only the GUI did this
+- `GridModel.padded()` / `cropped()`: the vegetation loaded from a file (`_loaded_rv`) was not carried over, so placing a tree after Add Border or Crop wiped all trees from the file. Both now copy `_loaded_rv` through the new helpers `_padded_rv()` / `_cropped_rv()` in `base/gridmodel.py`, and keep `resolved_vegetation` and `_loaded_rv` as the same object when they were before. New border voxels get 0 (no vegetation) instead of `-9999.0`. The `source_*` building data of a loaded file is not copied because it has the old grid size. Regression test `test_loaded_trees_survive_border_or_crop_and_new_tree` now runs for both pad and crop
+- Undo could fill the memory on large grids, because every step stores a full model snapshot without any limit (about 29 MB per step on a 200 x 200 grid and 727 MB on a 1000 x 1000 grid, mostly the USM `building_pars` arrays). `save_state()` in `palmpaint.py` now drops the oldest snapshots once the undo stack exceeds `undo_memory_limit` (2 GB), always keeping the newest one. The size comes from the new `GridModel.state_nbytes()` in `base/gridmodel.py`, which adds up the numpy arrays in a snapshot including nested dicts and lists. Interim fix until the per-building parameter storage makes snapshots small. Tests in `tests/test_undo.py`
+- Load errors were only printed to the terminal, so a failed load looked like nothing happened. `load_project_netcdf_from_path()` in `palmpaint.py` now also shows them in an error dialog with the file path, the error type and the message. The current project stays unchanged when loading fails
+- `LoadModel()` in `base/load_sd.py` now checks for the `x` and `y` dimensions first and raises a `ValueError` ("The file has no x dimension. Is it a PALM static driver?") instead of the unclear `KeyError: 'x'`
+- `building_id` used two fill values for "no building": `-127` in a new or edited model, `-9999` after loading a file. It now uses `GridModel.BUILDING_ID_FILL` (`-9999`, the PALM and `palm_csd` convention for `NC_INT`) everywhere: in `GridModel.__init__`, when a building is erased in `set_pixel()` and when buildings are removed after height quantization (`base/gridmodel.py`), in the brush reset values in `palmpaint.py`, and in the topography filter (`_reconstruct_2d()` / `apply_topography_filters()` in `base/palm_preflight.py`, new argument `building_id_fill`). Comparisons against `-127` stay, so older drivers with `-127` still load, and they are written as `-9999` on save. `test_save_load_keeps_all_layers` now passes
+- Analysis Plots, cross-section (`_plot_cross_section()` in `base/sd_plot.py`): the N-S section was mirrored (north on the left while the axis said S to N), because the code assumed model row 0 is north. Row 0 is south, as the maps already assume. The W-E section counted the slice index from the north although the title said "y row", and the slice limits of the two axes were swapped. The logic now lives in the new `cross_section_slices()`, both sections start at the south / west edge and the slice index is the column (N-S) or row (W-E)
+- Analysis Plots, cross-section: resolved vegetation was drawn from z = 0 and sank into the terrain. PALM defines `zlad` as height above the ground and lifts the canopy by the local terrain (`k + topo_top_ind` in the plant canopy model). New `lad_on_terrain()` in `base/sd_plot.py` does the same before drawing
+- Analysis Plots showed the model from the moment the dialog was first opened: after loading a file, Undo, Add Border or Crop it kept drawing the old data. `SDPlotDialog` takes an optional `model_source` and fetches the current model and georeference before every redraw, `_open_sd_plot_dialog()` in `palmpaint.py` passes it and redraws when the dialog is shown again. New "Refresh" button for redrawing after painting
+- Analysis Plots: parametrized and resolved vegetation had almost the same colour (`green` / `darkgreen`) in the simplified landcover and the plan area fractions. Now `_VEG_COLOR` (light) and `_RESOLVED_VEG_COLOR` (dark). The bars of the LAD vertical profile were too thin because their height came from the first, half-size `zlad` step
+- Tests for the cross-section orientation and the terrain lift in `tests/test_sd_plot.py`
+- Empty cells in drivers with a different fill value became real values on save. The loader filled masked cells with the file's own `_FillValue`, but PALMPaint and `SaveModel` use `-9999.0`. PALM's own test cases use `-9999.9`, so after load and save `rans_tkee` had 332 buildings `-9999.9` m high and `urban_environment_openmp_mpi` 2352 LAD voxels with `-9999.9`. `get_2d_data()`, `get_pars_data()` and `get_4d_data()` in `base/load_sd.py` now always fill with the model fill value they are given. `get_3d_data()` has a new argument `fill_value`, and `LoadModel()` passes `INT_FILL` for `buildings_3d`, `FLOAT_FILL` for `lad` / `bad` and `-9999` for `tree_id`. A masked `zt` cell now loads as `0.0` instead of the file's fill value. Test `test_foreign_fill_values_stay_empty_after_save` in `tests/test_load.py`
+- The origin of a loaded driver was changed silently. When a file had both `origin_lat` / `origin_lon` and `origin_x` / `origin_y`, `load_georeference()` kept one pair and recalculated the other, and without a `crs` variable it guessed the EPSG code from lat/lon. palmpy drivers (Swiss LV03 x/y) got `origin_lat` 1.59 instead of 46.73, `rans_tkee` (x/y 23 km away from lat/lon) got lat/lon shifted by 0.17 deg, and Gauss-Krueger x/y (`urban_environment_openmp_mpi`, `create_basic_static_driver`) were replaced by UTM. PALM uses `origin_lat` / `origin_lon` for the Coriolis force and the sun position. `load_georeference()` in `base/geo_reference.py` now keeps every value found in the file and only fills in missing ones. Without a `crs` variable the UTM zone of lat/lon is used only if x/y match it within one grid cell (new argument `tolerance`, `LoadModel()` passes the grid width), otherwise the CRS stays unknown. New in `base/geo_reference.py`: `georeference_as_given()`, `unknown_crs_georeference()` (`GeoReference.epsg_code` is `None`), `origin_mismatch()` and `georeference_warning()`. For an unknown CRS `write_georeference()` writes no `crs` variable and `add_grid_mapping()` no `grid_mapping` attribute. `load_project_netcdf_from_path()` in `palmpaint.py` warns when x/y and lat/lon do not match, and the Change Origin dialog (`change_origin()`) shows an empty EPSG field for an unknown CRS and keeps it unknown when the field stays empty. The load warning also says when `origin_lat` / `origin_lon` is the default Berlin example origin of PALM's `create_basic_static_driver` and of new PALMPaint projects (new `uses_default_origin()`), as in `rans_tkee` and `urban_environment_openmp_mpi`. Saving a project that still has the default origin asks once per origin whether to save anyway (`_save_project_to_file()` in `palmpaint.py`, flag `_default_origin_confirmed` reset by `_apply_georeference()`, autosave does not ask). The PALM explanation of the origin is in `PALM_ORIGIN_USE` and appears once per warning. Tests in `tests/test_georeference.py`, `save_and_load()` in `tests/test_roundtrip.py` takes an optional `georef`
+- Saving a driver whose CRS is not EPSG:25832 / 25833 made PALM abort. PALMPaint rebuilt the `crs` variable and wrote only 5 attributes (`long_name`, `projected_crs_name`, `epsg_code`, `units`, `crs_wkt`), but PALM reads 12 and stops with error NCF0524 when one is missing (e.g. `cut_cell_topography`, EPSG:32633). `load_georeference()` in `base/geo_reference.py` now stores all attributes of the file's `crs` variable in the new field `GeoReference.crs_attributes`, and `_crs_variable_attributes()` writes them back unchanged. Without a `crs` variable in the file, every UTM zone (not only Germany) now gets the full set. New `PALM_CRS_ATTRIBUTES`, `missing_palm_crs_attributes()` and `keep_crs_variable()`. `georeference_warning()` now also reports a CRS PALMPaint cannot convert (e.g. Swiss LV03) and a `crs` variable without the attributes PALM needs. The Change Origin dialog keeps the file's `crs` variable as long as the EPSG code stays the same and warns when the `crs` variable it would save is incomplete for PALM. Test `test_crs_variable_is_kept_on_save` in `tests/test_georeference.py`
+- `origin_z` was always written as 0.0, so the height above sea level of the domain was lost on save (palmpy 429 m, `rans_tkee` 30.81 m). PALM only uses it as reference height for the output and for `section_xy_m`, but the dynamic driver tool promet reads it from the static driver to take temperature, humidity and wind from the right height. New field `GeoReference.origin_z` (default 0.0, PALM's own default) in `base/geo_reference.py`, read in `load_georeference()` and written in `write_georeference()`. The Change Origin dialog (`change_origin()` in `palmpaint.py`) shows it in the new field "Origin z (m above sea level)" and keeps the entered value
+- Add Border, Crop and the coordinate display assumed that model row 0 is the northern edge, but it is the southern edge (PALM's y index 0, drawn at the bottom by both backends). Add Border put the north border in the south and the other way round (`GridModel.padded()` in `base/gridmodel.py`, and the "fill border with active tool" strips in `add_border()` in `palmpaint.py`). Crop mirrored typed y coordinates (`_get_crop_cells()` in `crop_grid()`), a rectangle drawn on the canvas worked because two mirrorings cancelled out, but the dialog showed mirrored y values. With "Use lower-left corner as 0,0" the row and meter labels counted from the top (`show_current_coordinates()`, `show_meter_coordinates()`). All now count rows from the south. Docstrings of `padded()` / `cropped()` corrected. Tests `test_border_sides_match_the_compass`, and `test_pad_then_crop_keeps_all_layers` / `test_border_and_crop_work_with_placed_trees` now use different north and south borders
+- Add Border and Crop did not move the origin, although they move the lower-left corner of the domain. `_apply_grid_transform()` in `palmpaint.py` now takes the shift in m (Add Border: west and south border, Crop: the crop offset) and applies the new `shifted_georeference()` in `base/geo_reference.py`. In a UTM CRS `origin_x` / `origin_y` and `origin_lat` / `origin_lon` move, lat/lon by the converted difference so the author's values are only shifted. In another or unknown CRS only `origin_x` / `origin_y` move and a warning says that `origin_lat` / `origin_lon` still point to the old corner. A rotated domain keeps its origin, with a warning. Undo and Redo now restore the origin together with the grid (`_snapshot()`, `_restore_model_from_state()`), and Change Origin is an undo step. Tests `test_border_and_crop_move_the_origin` and `test_origin_move_without_utm_keeps_lat_lon_and_warns` in `tests/test_georeference.py`
+- Change Origin showed latitude / longitude with 10 decimals (0.01 mm) and the confirmation with 6 (11 cm). It now shows what the data can carry: 7 decimals for lat/lon (about 1 cm) and 2 for metres. Values stay float64 inside PALMPaint and in the file (float32 would only resolve about 50 cm for a UTM northing). A field the user did not edit keeps its full original value (`field_value()` in `change_origin()`), and OK without edits in the position fields keeps the origin exactly. Before, OK in automatic mode always recalculated x/y from lat/lon and snapped them to the grid, even without any edit
+- Bridges were lost after editing. palm_csd and palmgeo store a bridge as `building_id` / `building_type` without `buildings_2d`, with its voxels only in `buildings_3d`. `SaveModel` reused the file's `buildings_3d` only if the 2D building data of the whole domain was unchanged, otherwise it rebuilt everything from `buildings_2d`, and Add Border / Crop dropped the file's building data. The bridge voxels disappeared and their IDs stayed, so PALM stopped with DRV0034 (152 cells in `palm_csd/berlin_tiergarten_N02` after one building edit). Filter Sweep removed the bridge IDs and so the bridges themselves. Now `SaveModel` (`base/create_sd.py`) keeps the file's voxels for every column whose 2D building data is unchanged and rebuilds only edited columns (`_building_3d_iter()`, new `GridModel.unchanged_building_columns()`), on the file's z levels, extended if an edited building is taller. `_padded_rv()` / `_cropped_rv()` in `base/gridmodel.py` now pad and crop the file's building data, `_building_top_z()` uses the same per-column rule, and `_reconstruct_2d()` in `base/palm_preflight.py` keeps the ID and type of cells that exist only in 3D. With Export buildings_3d switched off, a bridge cannot be saved: `SaveModel` now leaves its `building_id` / `building_type` out of the file (`left_out_3d_only_cells`, the model keeps them, new `GridModel.buildings_only_in_3d()`), and the validation reports them as an error before saving (see the validation entry). `SaveModel` also reports any other cell with a `building_id` but no building (`building_id_without_building`), and the app warns about it. Tests in the new `tests/test_bridges.py`
+- The validation was stricter than PALM and flagged 7 of 16 PALM-valid example drivers as INVALID, and Clean Static Driver deleted data PALM accepts. `validate()` in `base/validation.py` now follows PALM's own checks in `netcdf_data_input_mod.f90`. Removed rules: surface type on building cells (PALM needs one for the ground under a bridge, otherwise LSM0039, and palm_csd writes them for buildings lower than dz) and negative `zt` (PALM subtracts the lowest terrain point, fill values and NaN stay errors). `soil_type` without vegetation or pavement (water, buildings) is now a note instead of an error, because PALM ignores it, and Clean Static Driver removes it. Soil under vegetation or pavement on a bridge cell stays, PALM requires it there (DRV0023). LAD/BAD below the roof height in a building column is no longer an error but a note, because PALM counts `zlad` from the roof there and puts the vegetation on top of it (`plant_canopy_model_mod.f90`). `validate()` returns the new list `notes` besides `violations`, only violations make a project invalid. New errors from PALM: a building without `building_type` (DRV0033), a building without `building_id` and a `building_id` without a building (DRV0034). The new argument `export_buildings_3d` makes bridges an error when Export buildings_3d is off, this replaces the extra question on save. `clean_model()` no longer deletes surface types on building cells or LAD in building columns, or sets negative `zt` to 0, it removes soil only where there is no vegetation or pavement, `_vegetation_overlap_voxels()` was removed. In `palmpaint.py` the new `_validate_model()` passes the export setting, and the Validation, Clean and validate-before-save dialogs show the notes. A further note marks bridge cells whose deck reaches the ground, so no flow can pass under them (1665 cells in `palmgeo/hannover_1024_static`, where the deck height is one median per bridge). Notes are short one-liners and their cells are marked on the map like errors (`note_mask`, `_show_validation_overlay()` in `palmpaint.py`). All 16 example drivers are now valid. Tests in the new `tests/test_validation.py`
+- `create_tool_bar_buttons()` in `palmpaint.py` removed only the first four button rows when the view changed. With more than eight tools the extra buttons stayed visible in the heightmap and soil views. It now clears every row above the brush size slider (row 15)
+- 3D view: the LAD voxels were drawn half as high as they are, with gaps in between. `_build_lad_mesh()` in `base/threedview.py` took the box height from the first `zlad` step (0.5 dz, because `zlad` holds the level centres 0, dz/2, 3 dz/2, ...) and started each box at `zlad[k]`, so level 1 covered 0.5 to 1.0 m instead of 0 to 1 m and the crowns looked striped. A level now spans `zlad[k]` +- dz/2. Level 0 (the surface itself) is no longer drawn, because PALM never reads it (`plant_canopy_model_mod.f90` loops from `topo_top_ind + 1`)
+- New projects with trees did not run in PALM. Without a loaded file, `_rebuild_resolved_vegetation()` in `base/gridmodel.py` built `zlad` as `(k + 0.5) x dz` (dz 2: 1, 3, 5, ...), but PALM requires `zlad` to equal its grid levels `zu` = 0, dz/2, 3 dz/2, ... (`init_grid.f90`) and stops with PCM0010 otherwise (`plant_canopy_model_mod.f90`). Tree voxels were also placed one level too low, in new projects and on loaded palm_csd / palmgeo drivers: PALM's level k covers (k - 1) dz to k dz, but `_iter_tree_voxels()` put the generator layer from k dz to (k + 1) dz on level k, so the lowest crown layer went to level 0, which PALM never reads. New `GridModel.palm_zlad()` builds PALM's levels, and `_iter_tree_voxels()` now uses level `int(z / dz) + 1`. Files saved by older PALMPaint versions are repaired on load: `LoadModel()` in `base/load_sd.py` recognises their `zlad` (new `is_old_palmpaint_zlad()`), puts an empty level 0 in front of `lad`, `bad` and `tree_id` (`_with_empty_level_0()`) and sets `zlad_repaired` in the resolved vegetation, and `load_project_netcdf_from_path()` in `palmpaint.py` shows a warning that the file must be saved again. Tests in the new `tests/test_vertical_grid.py`
+- Tree crowns over a roof floated in PALM. PALM counts LAD in a building column from the roof (`k - topo_top_ind` in `plant_canopy_model_mod.f90`), but PALMPaint builds trees from the ground and kept the crown voxels above the roof, so PALM lifted them by the building height. PALMPaint now allows no leaves in or above a building, like palm_csd (`overhanging_trees: False`): `_rebuild_resolved_vegetation()` in `base/gridmodel.py` places no tree LAD in building columns (cells with `buildings_2d`), `set_pixel()` deletes LAD, BAD and `tree_id` in a column when a building is painted there (new `_clear_lad_column()`, covers brush, shapes and paste), and the new `GridModel.remove_lad_in_building_columns()` does the same for a whole area. It runs in `LoadModel()` in `base/load_sd.py` (10 to 152 cells in the palmgeo drivers, 9 in London, the app shows how many were removed), in `apply_filter_sweep()` in `base/palm_preflight.py` for new building cells and in `clean_model()` in `base/validation.py`, and the Clean and Filter Sweep dialogs list the cleared cells. Bridge columns (buildings_3d only) are not building columns, as in palm_csd, and keep the old rule (voxels up to the deck top are dropped). Note 6 of `validate()` now marks every building cell with LAD instead of only LAD below the roof, `_vertical_overlap_with_buildings()` was removed. Tests in the new `tests/test_trees_and_buildings.py`
+- Large arrays could fill the RAM, leave gigabytes behind after a crash and kill the program on a full disk. Arrays from 64 MB were memory-mapped files in a `tempfile.TemporaryDirectory` in the system temp folder. On Ubuntu that is a tmpfs, i.e. RAM, so the files saved no memory. The folder was only removed on a normal exit (on 2026-10-02 three leftover folders held 12 GB and the next session died), and a full disk ended the program with SIGBUS ("Bus error") instead of an error message. The new module `base/array_store.py` replaces `GridModel._ensure_temp_store()`, `_should_use_temp_backing()` and `TEMP_BACKED_ARRAY_THRESHOLD_BYTES`, `GridModel.allocate_storage()` now delegates to `array_store.allocate()`. An array goes into a file when it is larger than 1/32 of the RAM budget (about 15 large arrays, each held about twice), set with the new command line option `--ram` in GB (default 8, so 256 MB per array, `python3 palmpaint.py --ram 32`). At 1024 x 1024 nothing goes to disk any more (before 7 arrays, 0.96 GB). The files live in `tmp/` in the PALMPaint folder (in `.gitignore`, fallback the system temp folder if it cannot be created), one subfolder per session that keeps a lock on its file `lock` while the program runs (`msvcrt` on Windows, `fcntl` elsewhere, no extra package). `cleanup_stale_sessions()` deletes every subfolder whose lock it can take, at startup in `palmpaint.py` and before a new session folder is created, folders of a running PALMPaint stay. Each file is deleted as soon as its array is no longer used (`weakref.finalize`), so dropped undo snapshots free their disk space right away instead of when the model goes away. Before a file is created, `shutil.disk_usage()` checks the free space and the file is written once with normal file writes, a full disk raises the new `NotEnoughDiskSpace` with the needed and free space. `PaintApplication._report_callback_exception()` in `palmpaint.py` shows it as a dialog for every Tk callback. Measured with `palmgeo/hannover_2048_static`: 8 arrays (5.0 GB) in `tmp/`, loading takes 5.5 s instead of 2.7 s because the data is really written to disk, with `--ram 32` everything stays in RAM (3.1 s). After a SIGKILL the next start removed the 5 GB session folder. Tests in the new `tests/test_array_store.py`
+- palmpy drivers lost their tree IDs without a warning. palmpy writes `tree_id` in 2D (one ID per column), PALM's specification and palm_csd use 3D. `get_3d_data()` in `base/load_sd.py` returns `None` for anything that is not 3D, and because `tree_id` is a supported variable the unsupported-variables warning did not list it either. The new `_tree_id_from_2d()` now gives every voxel with leaves the ID of its column, so the IDs are kept and saved in 3D (`yv-bre-1_static`: all 287 IDs on 3,883 columns, the nests keep 150 and 71 IDs, 1 and 7 columns had an ID but no leaves). `LoadModel()` reports this in `tree_id_from_2d`, and any 3D variable it could not read because of its shape in `unreadable_3d_variables` (index variables like `tree_id(tree_id)` excluded), `load_project_netcdf_from_path()` in `palmpaint.py` shows both. Tests in `tests/test_load.py`
+- `SaveModel()` in `base/create_sd.py` crashed with `surface_config=None` as soon as the model had water, and without default water temperatures it would never have written `water_pars`. A missing `surface_config` or an unknown water type now counts as "no default known", so a set water temperature is always written. Test `test_save_without_surface_config_keeps_all_layers` in `tests/test_roundtrip.py`
+
+### Changed
+- `pytest.ini` silences NumPy 2.5's DeprecationWarning "Setting the shape on a NumPy array". It comes from netCDF4 1.7.3 and 1.7.4 themselves (`Variable.__setitem__`) on every write and cannot be avoided in PALMPaint. The app does not show it, Python hides DeprecationWarnings outside the main script. To be removed once netCDF4 is fixed
+- 3D view: resolved vegetation is coloured by its LAD value instead of one fixed green, so dense and thin parts of a crown can be told apart. `_build_lad_mesh()` in `base/threedview.py` gives each face the colour of its voxel from the new `_lad_colors()`: piecewise linear between the stops `_LAD_COLOR_STOPS` from light green (LAD 0) over a middle green (0.5 m2/m3) to dark green (1.5 m2/m3), and a deeper green (`_LAD_COLOR_ABOVE`) above 1.5. The stops follow the 16 example drivers: the median voxel is 0.15 to 0.4 m2/m3, a crown's densest voxel about 0.5 and values above 1.5 are rare (mainly `palm_csd/berlin_tiergarten_N02` and palmpy, both with a column LAI of 8 to 10). LAD is now drawn opaque instead of with opacity 0.55, because transparency is the most expensive part of rendering. Only the outside faces of the LAD voxels are drawn: a face is skipped where the neighbouring voxel has LAD too, to the side only if both columns have the same terrain height. Opaque LAD hides the inner faces anyway, so the picture stays the same with 6 to 8 times fewer faces (`palmgeo/hannover_1024_static`: 12.71 to 2.06 million, the largest part of the scene)
+- The parked brushes `irrigation`, `shf` and `ssws` are hidden from the toolbar and only shown with the new command line flag `--experimental` (`python3 palmpaint.py --experimental`). They are untested (`NOT_TESTED` in `tests/test_roundtrip.py`) and not part of a release. The code stays, and files that contain these layers still load, show and save as before. New `_EXPERIMENTAL_TOOLS` in `palmpaint.py`, appended to `PaintApplication.tool_bar_functions`
+- `environment.yml`: added `pillow` (without it, fresh environments silently fell back to the slow Tk backend), conda-forge as the only channel, package name `netcdf4`, `matplotlib` / `pyvista` listed as optional
+- `requirements.txt`: added `pillow`, `matplotlib` / `pyvista` listed as optional
+
+### Removed
+- Dead preflight code: `GridModel.preview_split_building_ids()` / `apply_split_building_ids()` / `preview_align_building_terrain()` / `apply_align_building_terrain()` in `base/gridmodel.py` and `run_split_building_ids_tool()` / `run_align_building_terrain_tool()` in `palmpaint.py`. The functions they called were deleted from `base/palm_preflight.py` in 0.5.0 together with their menu entries (the 0.5.0 entry says they were merged into the vectorised pipeline, but only the hole and cavity filter was), so every call failed with `ImportError` and nothing could reach them. What they tried to do, placing buildings on sloped terrain like PALM's `oro_max` and one ID per separate footprint, is on the roadmap
+
+---
+## [0.5.5-alpha] — dev branch (unreleased)
+
+### Added
+- **`shf` brush** — surface sensible heat flux (`NC_FLOAT`, units `K m s-1`, `_FillValue=-9999.0`): new paint tool restricted to default-type surfaces (cells where none of `vegetation_type`, `pavement_type`, `water_type`; value entered in the top-bar entry field; cleared automatically when any LSM surface type is painted over the cell
+- **`ssws` brush** — surface passive scalar flux (`NC_FLOAT`, units `kg m-2 s-1`, `_FillValue=-9999.0`): same restriction and clear-on-overwrite behaviour as `shf`
+- Both fields included in NetCDF I/O (`SaveModel` / `LoadModel`), `GridModel` state snapshots (`export_state` / `from_state`), `padded()` / `cropped()`, and undo/redo
+- Both fields exposed as View menu layers (Show / Lock) via `LAYER_KEYS`; `shf` renders with an orange canvas overlay (255, 140, 0) and `ssws` with a purple overlay (200, 0, 200) — both using the existing 65 %/35 % blend
+- **`street_types` catalog** added to `base/surface_config.py`: 19 OSM-aligned pavement sub-categories (`unclassified` → `motorway link`, `raceway`) for display and future tool use
+- **`_cell_is_default_surface(row, col)`** helper in `palmpaint.py`: returns `True` only when all LSMtype fields are at fill value and no building footprint exists; used as the paint guard for `shf` and `ssws`
+- **`irrigation` brush** — added Flag for future blue infrastructure module.
+
+### Changed
+- Remaining pavement type display colors in `base/surface_config.py` converted from CSS named colors (`"gray"`, `"dimgray"`, `"slategray"`, etc.) to explicit hex codes for cross-platform consistency (continues the pattern established in 0.5.4-alpha for vegetation and early pavement entries)
+
+---
+## [0.5.4-alpha] — dev branch (unreleased)
+
+### Added
+- **`base/building_config.py`**: building type catalogue (6 types with per-type hex colors and category grouping) plus full PALM USM parameter spec (12 arrays: `building_albedo_type`, `building_emissivity`, `building_fraction`, `building_general_pars`, `building_heat_capacity`, `building_heat_conductivity`, `building_indoor_pars`, `building_lai`, `building_roughness_length`, `building_roughness_length_qh`, `building_thickness`, `building_transmissivity`)
+- **Per-type building colors**: `get_color()` and the vectorized `_color_array_rgb()` path now render each building type in its configured color instead of uniform black
+- **`GridModel.building_pars`**: dict of 12 USM parameter arrays allocated at construction; included in `export_state()` / `from_state()`; cleared by `clear_building_parameters()` / `clear_building_parameters_where()` when building data is erased
+- **`GridModel.padded(n_north, n_south, n_west, n_east)`**: returns a new model with fill-value border cells added on each side; tree instance positions adjusted
+- **`GridModel.cropped(col_start, row_start, new_nx, new_ny)`**: returns a new model sliced to a sub-domain; tree instances outside the window are dropped
+- **Clipboard operations** (`palmpaint.py`): copy, cut, paste with `_copy_selection()` / `_commit_paste()`; paste mode supports **R** / **Shift-R** for ±15°/1° CW rotation with live hover preview; **Escape** cancels
+- **`_flood_select()`**: BFS flood-fill selection of all contiguous cells matching the seed cell's surface kind and type (landcover, heightmap, and soil views)
+- **`_lasso_select()`**: rectangle-lasso that finds the dominant surface key inside the drag box and flood-fills its full contiguous extent across the whole grid
+- **Ellipse draw mode** (`_get_ellipse_cells()`): filled axis-aligned ellipse inscribed in the drag bounding box; `force_circle` flag; integrated into `_get_shape_cells()` as a third draw mode alongside rectangle and line
+- **`base/sd_plot.py`** (`SDPlotDialog`): embedded matplotlib analysis dialog with 12 plot types (XY landcover/pavement/vegetation/LAD/terrain/soil/building type and height, cross-section, height histogram, LAD profile, plan area fractions); optional — disabled gracefully without matplotlib
+- **`base/threedview.py`**: PyVista 3D view launched in a daemon thread; PALM→PyVista coordinate convention; face tags in mesh cell data; optional — disabled gracefully without pyvista
+- **`startup_path` CLI argument** in `palmpaint.py`: optional positional argument; when supplied, skips the welcome screen and loads the given `.nc` file directly (e.g. `python3 palmpaint.py my_project.nc`)
+- `_write_4d_variable()` in `create_sd.py`: streaming 4D NetCDF write (leading-dim / z / y blocks) for multi-dimensional building parameter arrays; only written when non-fill values are present (`_has_non_fill_values()`)
+- `get_4d_data()` in `load_sd.py`: 4D variable loader with shape validation and optional `storage_factory`
+
+### Changed
+- `base/framework.py`: replaced `eval(command_callback)` with `getattr(self, attr_name)` — removes arbitrary code execution risk from menu configuration
+- `base/surface_config.py`: vegetation and pavement display colors converted from Tk named colors (`"green"`, `"lawngreen"`, `"tan"`, etc.) to explicit hex codes for cross-platform consistency
+- `base/palm_preflight.py`: removed `DEFAULT_BUILDING_TYPE` constant; `apply_topography_filters()` now accepts `default_building_type` parameter; `preview_filter_sweep()` resolves the value from `building_config`
+- `clean_model()` in `validation.py`: clears building parameters at cells outside building footprints; count reported as `building_parameters_cleared_outside_buildings`
+- `base/create_sd.py`: NetCDF export now writes `vegetation_type`, `pavement_type`, and `water_type` as a set whenever any of the three surface layers is present, leaving unset layers at fill values
+
+---
+## [0.5.3-alpha] — dev branch (unreleased)
+
+### Added
+- **Select tool**: new toolbar entry for multi-cell selection
+  - Click to select a single cell; Shift-click adds to selection; Ctrl-click toggles
+  - *Select Same Surface* button: expands selection to all cells sharing the same surface kind
+  - *Select By* dropdown + button: extends selection to all cells matching a chosen criterion (zt, building type / height, water type / temperature, vegetation / pavement / soil type)
+  - Top-bar edit fields (zt, surface-specific attributes) with *Apply to Selection*: batch-edits all selected cells at once
+  - Sidebar shows a selection summary (count, surface kind, common/mixed attribute values) while the tool is active
+- **Layer visibility and locking** (View menu, per layer: Vegetation, Pavement, Water, Buildings):
+  - *Show &lt;Layer&gt;*: hides the layer from the canvas without deleting data
+  - *Lock &lt;Layer&gt;*: prevents any paint or selection edit from modifying cells on that layer
+- **Background overlays** (View menu): *Add Heightmap to Background* and *Add Soilmap to Background* blend a grayscale height or soil tint behind the landcover colours
+- **Draw modes** (Brush / Rectangle / Line toggle appended to the top bar for Vegetation, Pavement, Water, Building, and Eraser tools):
+  - *Rectangle*: click-drag defines the bounding box; pixels are flushed on mouse release with a live preview during drag
+  - *Line*: Bresenham line between press and release points with live preview
+  - New helpers `_get_rectangle_cells()`, `_get_line_cells()`, `_get_shape_cells()`, `_paint_shape_cells()`
+- **`EditorState`** dataclass (`base/editor_state.py`): centralises all non-persistent UI state (active view, per-layer visibility / locks, view-specific settings, selection); constructed once at startup and passed to the backend
+- **`GridModel.export_state()` / `GridModel.from_state()`**: lightweight snapshot/restore for undo/redo; replaces `copy.deepcopy()` of the entire model
+- **`GridModel.get_height_grayscale_color()` / `_color_array_height_gray()` / `_color_array_soil()`**: per-cell and vectorised colour helpers used by the new background overlays
+- **`PilCanvasBackend.set_landcover_background_config()`**: configures height/soil tinting parameters without rebuilding the full image
+- **`PilCanvasBackend.show_selection()` / `clear_selection_overlay()`**: renders a selection highlight overlay on selected cells
+
+### Changed
+- `palmpaint.py`: `save_state()` calls `model.export_state()` instead of `copy.deepcopy()`; `undo()` / `redo()` restore via `GridModel.from_state()`
+- `palmpaint.py`: `canvas_zoom_in()`, `canvas_zoom_out()`, and the mousewheel handler now read `self.res` back from `backend.effective_res` after each zoom call instead of multiplying in-place
+- Backend is now constructed with `editor_state=self.editor_state`; `set_view_mode()` and `set_height_view_config()` calls replaced by `_apply_editor_state_to_backend()`
+- `new_project()` and `load_project_netcdf_from_path()` call `_reset_editor_state()`, `_initialize_landcover_background_range()`, `_apply_editor_state_to_backend()`, and `_sync_editor_state_to_ui()` to keep state consistent after project changes
+- All paint paths (brush, fill-all, shape, selection apply) call `_is_paint_locked_at()` and skip locked-layer cells
+- Right-click clear and right-click drag handlers early-exit when the select tool is active
+
+### Fixed
+- `clear_cell_info()` now shows the selection summary instead of the placeholder text while the select tool has an active selection
+- `update_hover_preview()` correctly shows a single-cell preview for the select tool instead of the brush outline
+
+---
+## [0.5.2-alpha] — dev branch (unreleased)
+
+### Added
+- **`GridModel.allocate_storage()`**: allocates arrays as `np.memmap` when the requested size exceeds 64 MB (`TEMP_BACKED_ARRAY_THRESHOLD_BYTES`); otherwise returns a normal `np.ndarray`; backed by a per-model `tempfile.TemporaryDirectory` (`_temp_store`)
+- **`GridModel.materialize_storage()`**: copies an existing array into regular or memmap-backed storage, respecting the size threshold
+- **`GridModel._building_top_z()`**: lazy per-column top-building-height cache (replaces the full `(nz, ny, nx)` boolean volume produced by `_building_volume_mask_from_z()`); invalidated by `_invalidate_building_cache()` whenever building data is modified via `set_pixel()`
+- **`_write_2d_variable()` / `_write_3d_variable()` / `_building_3d_iter()`** in `create_sd.py`: block-streaming helpers that write NetCDF variables row-by-row (2D) or z-layer-by-row-block (3D) to avoid materializing large temporary arrays
+- **`SaveModel()`** in `create_sd.py`: new primary save entry point that accepts a `GridModel` directly; reads 2D arrays straight from model attributes instead of iterating a per-cell dict; `buildings_3d` and `water_pars` are written in blocks without ever allocating the full volume in RAM; old `Save()` retained as a backward-compatible wrapper
+- **`LoadModel()`** in `load_sd.py`: new primary load entry point that returns a fully-populated `GridModel` instead of a legacy per-cell dict; `get_3d_data()` extended with an optional `storage_factory` callback so large 3D variables (buildings_3d, lad, bad, tree_id) are streamed slice-by-slice directly into memmap-backed arrays; old `Load()` retained as a backward-compatible wrapper
+
+### Changed
+- `palmpaint.py` now calls `SaveModel()` / `LoadModel()` directly; the intermediate `from_legacy_dict()` reconstruction step on load is removed
+- `_resolved_vegetation_source_metadata()` no longer deep-copies numpy arrays into metadata (avoids doubling memory for large 3D fields)
+- `_rebuild_resolved_vegetation()` allocates `lad`, `bad`, and `tree_id_arr` via `allocate_storage()` so very large tree volumes are memory-mapped automatically
+
+### Fixed
+- `_building_volume_mask_from_z()` allocated an `(nz, ny, nx)` boolean array on every `_rebuild_resolved_vegetation()` call; replaced with the cached `_building_top_z()` scalar comparison, eliminating the peak memory spike for tall domains
+
+---
+## [0.5.1-alpha] — dev branch (unreleased)
+
+### Added
+- **PIL rendering backend** (`base/pilbackend.py`): new `PilCanvasBackend` class that replaces the per-cell Tkinter `Rectangle` approach with a single `tk.PhotoImage` rebuilt from a numpy array via Pillow; grids of 500×500 and beyond render in well under a second instead of several seconds
+  - Drop-in replacement for `TkCanvasBackend` (identical public API)
+  - Tree and error overlays baked directly into the PIL image via `ImageDraw` (C-level, no individual canvas items)
+  - Grid lines rendered only when cells are ≥ 16 display pixels wide
+  - Display image side capped at 4096 px (`_MAX_SIDE`) to keep memory usage bounded (~48 MB at 4096×4096 RGB)
+  - Selected automatically on startup; falls back to the Tk backend if Pillow is not available, printing the exact `ImportError` message so the cause is immediately visible
+- **`--backend` CLI argument** in `palmpaint.py`: `--backend pil` (default) or `--backend tk` forces the rendering backend at startup
+- **`_run_with_busy_dialog()`** in `palmpaint.py`: runs long-running callbacks in a worker thread while showing a modal dialog with an indeterminate `ttk.Progressbar`; exceptions from the worker are re-raised in the main thread
+- **`GridModel.get_color_array_rgb()`**: vectorised equivalent of calling `get_color()` for every cell; returns an `(ny, nx, 3)` uint8 numpy array; supports `landcover`, `heightmap`, and `soil` view modes
+- **`GridModel._hex_to_rgb()`** static method: converts Tk/CSS colour strings (`#RRGGBB`, `#RGB`, named colours) to `(R, G, B)` tuples; backed by the new module-level `_CSS_COLORS` lookup table covering the full CSS3 / X11 set including Tk-specific numbered variants (e.g. `"green4"`)
+
+### Changed
+- `base/palm_preflight.py` rewritten with fully vectorised numpy algorithms:
+  - `_build_topography_classification()` builds a 3-D `(nz, ny, nx)` voxel classification array (terrain / building / air) in one pass instead of cell-by-cell BFS
+  - `_fill_holes()` and `_count_solid_neighbors()` implement the 1-cell hole-fill sweep with pure numpy broadcasting; replaces the previous Python-loop BFS
+  - Removed `find_building_components()`, `analyze_building_groups()`, `split_disconnected_building_ids()`, `_four_neighbors()`, `_normalize_zt_array()`, `_normalize_building_heights()`, `_next_unused_building_id()` (functionality merged into the vectorised pipeline)
+
+---
+## [0.4.3-alpha] — dev branch (unreleased)
+
+### Added
+- **Eraser tool**: new toolbar entry that resets all surface and building layers of the painted cells to fill values
+- **Validation module** (`base/validation.py`): standalone surface-layer consistency checker with 8 rules + coordinate range check (DRV0001); returns a `violations` list and a per-cell `invalid_mask` boolean array
+  - Rule 1: vegetation / pavement / water are mutually exclusive
+  - Rule 2: building cells must not carry a surface type
+  - Rule 3: all non-building cells need a surface type once any is in use
+  - Rule 4: `water_pars` only on water cells
+  - Rules 5a/5b: soil_type required on vegetation/pavement cells; fill required on building/water cells
+  - Rule 6: LAD only where a surface type is set
+  - Rule 7: `building_type` requires `building_id`
+  - Rule 8: `building_id` must be a positive signed 32-bit integer
+  - DRV0001: `origin_lon` ∈ [−180, 180] and `origin_lat` ∈ [−90, 90]
+- **Validation error overlay** in the canvas: cells involved in at least one rule violation are highlighted with a red inset border; toggleable via *Extras → Show Error Overlay*
+- **Validate before Save** option in Extras menu (default: on); pre-save validation check with "Save anyway?" dialog
+- **Clean Static Driver** action: automatic repair of common inconsistencies (invalid zt, LAD/BAD inside buildings, orphaned soil/surface/water_pars assignments, missing soil types, auto-assigned building IDs); runs validation afterward and shows a detailed summary
+- **PALM Preflight tool** (`base/palm_preflight.py`) exposed via Extras menu (preview + apply):
+  - *Filter Sweep*: PALM-style 1-cell hole filling and narrow-cavity removal; preview highlights affected cells in the overlay before applying
+- `add_tree()` now returns a placement summary `{tree_id, clipped_voxels, placed_voxels}`; trees placed entirely within building volume are automatically discarded; a warning dialog is shown when a crown is partially or fully clipped
+
+### Changed
+- `GridModel.__init__` derives `vegetation_type` and `soil_type` defaults from `surface_config` instead of hardcoding `1`; `surface_config.py` gained a top-level `"default_type": 3` for vegetation
+- `_apply_brush()`, `eraser tool path`, and fill-all action now use the shared `_reset_pixel_payload()` helper
+- Paint tools (vegetation / pavement / water / fill-all) skip cells that already carry building or tree data
+- `_rebuild_resolved_vegetation()` refactored to use `_iter_tree_voxels()` and `_build_tree_generator_params()` helpers and a building-volume mask; preserves source metadata via `_resolved_vegetation_source_metadata()`
+- Domain border drawn as a persistent canvas item (`_draw_domain_border()`), raised above all overlays; `clear()` resets its ID
+
+### Fixed
+- `get_color()` returned `None` for fully-erased (all-fill) cells, leaving their canvas rectangle transparent; `return "white"` moved to a function-level fallback
+- `has_building` and `has_bld_id` in `validation.py` used `INT_FILL = -127` as threshold for `building_id`, masking values between −9999 and −128 as non-fill; corrected to use `BUILDING_ID_FILL = -9999`
+- `draw_grid()` rendered all cells with `fill="brown"` on first load instead of reading `model.get_color()`
+
+---
+
+## [0.4.2-alpha] — dev branch (unreleased)
+
+### Added
+- Separate vertical grid spacing `dz` (independent from horizontal `res`): configurable in the new-project dialog, stored in and loaded from the NetCDF file, exposed throughout the application
+- `buildings_3d` export: optional 3D voxel building layer in the NetCDF output (toggle via *Extras → Export buildings_3d*); buildings below `dz/2` are replaced with asphalt and a warning is shown
+- "Discretize Project to dz" menu action: re-snaps all terrain and building heights of the whole project to the current `dz` raster in one step
+- Lower-left origin mode for the coordinate display: checking the checkbox in the *Change Origin* dialog switches the meter readout from local grid coordinates (0/0) to absolute projected coordinates offset by `origin_x` / `origin_y`
+- `x` / `y` coordinate variables and CRS grid-mapping attributes (`grid_mapping`) are now written to all spatial variables in the saved NetCDF file
+- Building height spinbox step and tree height spinbox step now use `dz` instead of `res`
+
+### Changed
+- `GridModel` now stores `dz` as a first-class attribute; `set_pixel()` applies `dz`-based quantization for terrain and building heights by default (can be disabled with `quantize=False`)
+- `quantize_building_height()` and `quantize_terrain_height()` extracted as public static methods on `GridModel`
+- `infer_vertical_step()` replaces the old `infer_dz_from_zlad()` internals with improved leading-half-step detection
+- `Save()` signature extended: accepts `dz`, `georef`, and `export_buildings_3d`; returns a summary dict with deleted/replaced building counts
+- `Load()` now returns `(grid, nx, ny, res, dz, origin, resolved_vegetation, georef)` and reads `dz` and the full `GeoReference` from the file
+- `BUILDING_ID_FILL` changed from `-127` to `-9999` to avoid ambiguity with `INT_FILL`
+- Grid-spacing Labelframe in the new-project dialog renamed from "Grid Width" to "Grid Spacing" and extended with a `dz` entry field
+- Sidebar label now shows both horizontal `res` and vertical `dz`
+- Tree generator receives `(res, res, dz)` grid config instead of a single resolution value
+- `zlad` generation for tree instances now re-uses the loaded zlad array as a base and extends it only if needed
+
+### Fixed
+- Several bugs in the Tree Generator (crown geometry edge cases and generator preset handling)
+
+---
+
+## [0.4.1-alpha] — dev branch (unreleased)
+
+### Added
+- Autosave: project is periodically saved to rotating autosave slots; slot count and interval are configurable via the autosave options dialog
+- Keyboard shortcuts for Save (`Ctrl+S`) and Save As (`Ctrl+Shift+S`)
+- Dedicated georeferencing module with UTM-based lat/lon <-> projected-meter conversion, CRS metadata handling, and PALM-style `crs` / `lat` / `lon` / `E_UTM` / `N_UTM` output
+
+### Changed
+- Improved single-tree canvas representation: overlay cells now use a clearly inset rectangle with Beer-Lambert stipple shading so they are visually distinct from the grid lines at all zoom levels
+- Origin editing now uses the project CRS and keeps geographic and projected coordinates in sync
+
+### Fixed
+- Several bugs in the Tree Generator (crown geometry edge cases and generator preset handling)
+
+---
+
+## [0.4.0-alpha] — dev branch (unreleased)
+
+### Added
+- Single-tree tool: place resolved 3-D trees directly on the canvas (left-click = place, right-click = remove)
+- `tree_generator_core.py`: LAD field generation using crown shapes and extinction model similar to palm_csd
+- `tree_generator_dialog.py`: interactive Tree Generator dialog with live matplotlib preview and preset save/load
+- `tree_species.py`: built-in catalog of ~90 tree species with default geometry (crown shape, height, LAI, BAD/LAD ratio, trunk diameter) from PALM documentation
+- Species selector and shape combobox in the single-tree tool bar
+- Support for 6 crown shapes (Spherical, Cylindrical, Conical, Inv. Conical, Paraboloid, Inv. Paraboloid)
+- BAD (Basal Area Density) output toggle ("Write BAD" checkbox)
+- `GridModel.tree_instances`: list of editable per-tree objects with id, position, and geometry
+- `GridModel.resolved_vegetation`: 3D LAD/BAD/tree_id/zlad arrays rebuilt from `tree_instances`
+- `GridModel._loaded_rv`: immutable base layer preserving vegetation loaded from existing NetCDF files
+- `GridModel.remove_loaded_lad_at()`: cell-level removal of externally-loaded vegetation without a tree instance
+- NetCDF read/write for `lad`, `bad`, `tree_id`, and `zlad` variables in `load_sd` and `create_sd`
+
+### Bugfix
+- The report now displays the correct building heights
+
+## [0.3.0-alpha] — dev branch (unreleased)
+
+### Added
+- Hover preview system on canvas (`show_hover_preview`, `clear_hover_preview`)
+- "Load Existing Project" button in the welcome screen (file dialog for `.nc` files)
+- Improved canvas scroll mechanism using `bbox`-relative `xview_moveto` / `yview_moveto`
+
+### Changed
+- Replaced `start_x`, `start_y`, `end_x`, `end_y`, `current_item` with unified `active_cell`
+- `welcome_screen` result tuple now prefixed with action type: `("new", nx, ny, res)` or `("load", path)`
+- Vegetation definitions moved out of `palmpaint.py` into `surface_config`
+- Version bumped to `0.3.0-alpha`
+
+---
+
+## [0.2.1] — dev branch (not yet merged to main)
+
+### Added
+- Height view (heightmap editing mode)
+- Soil view with configurable surface types
+- Configurable surfaces via external surface config
+
+---
+
+## [0.2.0] — 2025 (main)
+
+### Changed
+- Major refactor of `GridModel` and `TkBackend`
+- Various bugfixes
+
+---
+
+## [0.1.x] — earlier development
+
+### Added
+- Undo and redo functionality
+- Bucket fill tool
+- Report window
+- Coordinates display in meters
+- New project function with start screen
+- Load and save options (NetCDF)
+- `base/` package structure (refactored from flat layout)
+- `requirements.txt` and `environment.yml`
+
+### Fixed
+- NetCDF load errors
+- Repainting issues
+- Build height spinner edge cases (`0/0` origin)
+
+---
+
+## [0.1.0] — initial release
+
+- First working version of PALMPaint
+- Basic painting tools for PALM static driver files
+- PEP8 code style cleanup

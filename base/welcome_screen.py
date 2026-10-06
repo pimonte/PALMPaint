@@ -1,16 +1,17 @@
 import tkinter as tk
-from tkinter import ttk, PhotoImage
+from tkinter import ttk, PhotoImage, filedialog
 import os
 
 class WelcomeForm(tk.Toplevel):
-    def __init__(self, master=None, default_nx=16, default_ny=16, default_res=4, logo_path=None):
+    def __init__(self, master=None, default_nx=16, default_ny=16, default_res=4, default_dz=None, logo_path=None):
         super().__init__(master)
         self.title("Welcome to PALMPaint")
         self.configure(bg="white")
-        self.result = None  # Will hold the tuple (nx, ny, res)
+        self.result = None  # Will hold the tuple (nx, ny, res, dz)
         self.default_nx = default_nx
         self.default_ny = default_ny
         self.default_res = default_res
+        self.default_dz = default_res if default_dz is None else default_dz
         self.logo_path = "./Pictures/palmpaint_small.png" # predetermined logo path set by the project
         
         # Set ttk styles to have a white background
@@ -52,8 +53,8 @@ class WelcomeForm(tk.Toplevel):
         self.ny_entry.insert(0, str(default_ny))
         self.ny_entry.grid(row=0, column=3, padx=5, pady=5)
 
-        # Group res in a Labelframe called "Grid Width"
-        width_frame = ttk.Labelframe(container, text="Grid Width", padding=10)
+        # Group horizontal and vertical spacing in a Labelframe.
+        width_frame = ttk.Labelframe(container, text="Grid Spacing", padding=10)
         width_frame.grid(row=3, column=0, columnspan=2, pady=10, padx=5, sticky="ew")
 
         ttk.Label(width_frame, text="res:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
@@ -61,9 +62,23 @@ class WelcomeForm(tk.Toplevel):
         self.res_entry.insert(0, str(default_res))
         self.res_entry.grid(row=0, column=1, padx=5, pady=5)
 
+        ttk.Label(width_frame, text="dz:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
+        self.dz_entry = ttk.Entry(width_frame, width=10)
+        self.dz_entry.insert(0, str(self.default_dz))
+        self.dz_entry.grid(row=0, column=3, padx=5, pady=5)
+
         # Create the action button with updated text.
-        action_button = ttk.Button(container, text="Create New Static Driver Project", command=self.on_ok)
-        action_button.grid(row=4, column=0, columnspan=2, pady=15)
+        button_frame = ttk.Frame(container)
+        button_frame.grid(row=4, column=0, columnspan=2, pady=15)
+        
+        action_button = ttk.Button(button_frame, text="Create New Static Driver Project", command=self.on_ok)
+        action_button.grid(row=0, column=0, padx=5, pady=(0,10), sticky="ew")
+        
+        load_button = ttk.Button(button_frame, text="Load Existing Project", command=self.on_load_netcdf)
+        load_button.grid(row=1, column=0, padx=5, pady=(0,10), sticky="ew")
+        
+        #action_button = ttk.Button(container, text="Create New Static Driver Project", command=self.on_ok)
+        #action_button.grid(row=4, column=0, columnspan=2, pady=15)
 
         # Ensure closing the window sets default values.
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -89,16 +104,26 @@ class WelcomeForm(tk.Toplevel):
             res = float(self.res_entry.get()) if self.res_entry.get() != "" else self.default_res
         except ValueError:
             res = self.default_res
+        try:
+            dz = float(self.dz_entry.get()) if self.dz_entry.get() != "" else self.default_dz
+        except ValueError:
+            dz = self.default_dz
 
-        self.result = (nx, ny, res)
+        self.result = ("new", nx, ny, res, dz)
         self.destroy()
+        
+    def on_load_netcdf(self):
+        file_path = filedialog.askopenfilename(title="Select NetCDF File", filetypes=[("All Files", "*"), ("NetCDF Files", "*.nc")])
+        if file_path:
+            self.result = ("load", file_path)
+            self.destroy()
 
     def on_close(self):
         # Use default values if the user closes the form.
-        self.result = (self.default_nx, self.default_ny, self.default_res)
+        self.result = ("new", self.default_nx, self.default_ny, self.default_res, self.default_dz)
         self.destroy()
 
-def get_welcome_input(master, default_nx=16, default_ny=16, default_res=4, logo_path=None):
-    welcome = WelcomeForm(master, default_nx, default_ny, default_res, logo_path=logo_path)
+def get_welcome_input(master, default_nx=16, default_ny=16, default_res=4, default_dz=None, logo_path=None):
+    welcome = WelcomeForm(master, default_nx, default_ny, default_res, default_dz, logo_path=logo_path)
     master.wait_window(welcome)
     return welcome.result
