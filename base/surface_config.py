@@ -346,3 +346,17 @@ VEGETATION_PARAMETERS = (
     ("albedo type", ""),
     ("surface emissivity", ""),
 )
+
+
+# PALM's default roughness lengths z0 and z0h in m per vegetation type
+# (land_surface_model_mod.f90, vegetation_pars indices 4 and 5) and for all
+# pavement types (pavement_pars indices 0 and 1). Water types carry
+# z0_water / z0h_water in SURFACE_CONFIG.
+PALM_VEGETATION_ROUGHNESS = {
+    1: (0.005, 0.5e-4), 2: (0.10, 0.001), 3: (0.03, 0.3e-4), 4: (2.0, 2.0),
+    5: (2.0, 2.0), 6: (2.0, 2.0), 7: (2.0, 2.0), 8: (0.47, 0.47e-2),
+    9: (0.013, 0.013e-2), 10: (0.034, 0.034e-2), 11: (0.5, 0.5e-2), 12: (0.17, 0.17e-2),
+    13: (1.3e-3, 1.3e-4), 14: (0.83, 0.83e-2), 15: (0.10, 0.10e-2), 16: (0.25, 0.25e-2),
+    17: (2.0, 2.0), 18: (1.10, 1.10),
+}
+PALM_PAVEMENT_ROUGHNESS = (0.05, 0.5e-3)

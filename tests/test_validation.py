@@ -95,3 +95,22 @@ def test_clean_removes_soil_without_vegetation_or_pavement():
     assert model.soil_type[BUILDING_CELL] == model.INT_FILL
     assert model.soil_type[WATER_CELL] == model.INT_FILL
     assert model.soil_type[PAVEMENT_CELL] == 1  # real soil stays
+
+
+def test_forest_roughness_too_large_for_the_grid_is_noted():
+    # PALM stops with LSM0048 where z0 >= dz/4 (forest: z0 = 2 m)
+    from base.gridmodel import GridModel
+    import base.surface_config as surface_config
+
+    def notes_for(dz, vegetation_type, own_z0=None):
+        model = GridModel(6, 6, 2.0, dz, surface_config.SURFACE_CONFIG)
+        model.vegetation_type[:, :] = vegetation_type
+        model.soil_type[:, :] = 3
+        if own_z0 is not None:
+            model.vegetation_pars[4, :, :] = own_z0
+        return [n for n in model.validate()["notes"] if "LSM0048" in n]
+
+    assert notes_for(2.0, 4)                 # forest on a 2 m grid
+    assert not notes_for(10.0, 4)            # 2 m < 10 m / 4
+    assert not notes_for(2.0, 3)             # short grass, z0 = 0.03 m
+    assert notes_for(2.0, 3, own_z0=0.8)     # own roughness length in vegetation_pars

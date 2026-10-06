@@ -312,6 +312,9 @@ class GridModel:
         self.show_grid_lines = True
         self.surface_config = surface_config
         self._building_top_cache = None
+        # Global attributes of the loaded file (source, author, licence, ...),
+        # written back on save because data licenses require the attribution
+        self.file_attributes = {}
 
         # Default: bare soil everywhere — derive types from surface_config when available
         _sc = surface_config or {}
@@ -466,6 +469,7 @@ class GridModel:
             "building_type": np.array(self.building_type, copy=True),
             "water_pars": np.array(self.water_pars, copy=True),
             "vegetation_pars": np.array(self.vegetation_pars, copy=True),
+            "file_attributes": dict(self.file_attributes),
             "irrigation_flag": np.array(self.irrigation_flag, copy=True),
             "shf":  np.array(self.shf,  copy=True),
             "ssws": np.array(self.ssws, copy=True),
@@ -502,6 +506,7 @@ class GridModel:
         model.building_type[:, :] = state["building_type"]
         model.water_pars[:, :, :] = state["water_pars"]
         model.vegetation_pars[:, :, :] = state["vegetation_pars"]
+        model.file_attributes = dict(state.get("file_attributes", {}))
         if "irrigation_flag" in state:
             model.irrigation_flag[:, :] = state["irrigation_flag"]
         if "shf" in state:
@@ -623,6 +628,7 @@ class GridModel:
         new.building_type[r, c]   = self.building_type
         new.water_pars[:, r, c]   = self.water_pars
         new.vegetation_pars[:, r, c] = self.vegetation_pars
+        new.file_attributes = dict(self.file_attributes)
         new.shf[r, c]             = self.shf
         new.ssws[r, c]            = self.ssws
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:
@@ -663,6 +669,7 @@ class GridModel:
         new.building_type[:, :]   = self.building_type[r, c]
         new.water_pars[:, :, :]   = self.water_pars[:, r, c]
         new.vegetation_pars[:, :, :] = self.vegetation_pars[:, r, c]
+        new.file_attributes = dict(self.file_attributes)
         new.shf[:, :]             = self.shf[r, c]
         new.ssws[:, :]            = self.ssws[r, c]
         for name, _dim_names in self.BUILDING_PARAMETER_SPECS:

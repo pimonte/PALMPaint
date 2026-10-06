@@ -14,6 +14,7 @@ from base.geo_reference import (
     add_grid_mapping,
     coordinate_attribute_names,
     ensure_georeference,
+    parse_epsg_code,
     write_georeference,
 )
 from base.gridmodel import GridModel
@@ -42,6 +43,22 @@ def _write_2d_variable(var, data, *, transform=None, block_rows=128):
         if transform is not None:
             block = transform(block)
         var[start:end, :] = block
+
+
+def _write_file_attributes(nc_file, model, georef):
+    """Write the loaded file's global attributes back (source, author, licence, ...).
+
+    The data licenses of many drivers (e.g. OpenStreetMap, Copernicus) require
+    the attribution in `source`. Origin and rotation are written afterwards by
+    write_georeference() and win. A global epsg_code follows the current CRS.
+    """
+    attributes = dict(getattr(model, "file_attributes", {}) or {})
+    if "epsg_code" in attributes and georef is not None and georef.epsg_code is not None:
+        if parse_epsg_code(attributes["epsg_code"]) != georef.epsg_code:
+            attributes["epsg_code"] = f"EPSG:{georef.epsg_code}"
+    for name, value in attributes.items():
+        if not name.startswith("_"):            # netCDF's own attributes like _NCProperties
+            nc_file.setncattr(name, value)
 
 
 def _write_3d_variable(var, data, *, transform=None, block_rows=32):
@@ -193,6 +210,7 @@ def SaveModel(
                         z_data = source_z
 
         with Dataset(filename, 'w', format='NETCDF4') as nc_file:
+            _write_file_attributes(nc_file, model, georef)
             nc_file.createDimension('x', nx)
             nc_file.createDimension('y', ny)
             if z_data is not None:
@@ -464,8 +482,11 @@ def SaveModel(
                 else:
                     _write_4d_variable(variable, building_parameter_data[name])
 
-            nc_file.title = 'Idealized Scenario'
-            nc_file.author = 'PALM User'
+            # Defaults only for new projects, a loaded file keeps its own
+            if "title" not in nc_file.ncattrs():
+                nc_file.title = 'Idealized Scenario'
+            if "author" not in nc_file.ncattrs():
+                nc_file.author = 'PALM User'
             nc_file.palmpaint_dz = vertical_dz
 
         print(f"NetCDF file saved: {filename}")

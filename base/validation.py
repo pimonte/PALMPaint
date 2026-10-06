@@ -10,6 +10,8 @@ All checks are implemented as standalone functions that accept a GridModel
 
 import numpy as np
 
+from base.surface_config import PALM_PAVEMENT_ROUGHNESS, PALM_VEGETATION_ROUGHNESS
+
 
 AUTO_BUILDING_ID_START = np.iinfo(np.int32).max - 1
 
@@ -61,6 +63,43 @@ def _default_soil_for_surface(model, *, vegetation_type=None, pavement_type=None
         return int(pav_def.get("soil_type", soil_default))
 
     return soil_default
+
+
+def roughness_too_large(model):
+    """Cells where PALM's land surface model stops with LSM0048, and the largest z0.
+
+    PALM compares z0 and z0h with z_mo, the height of the first grid level above
+    the surface (dz/2): it stops where z0 >= 0.5 z_mo or z0h >= z_mo
+    (land_surface_model_mod.f90, lsm_init), unless allow_roughness_limitation
+    is set. z0 comes from vegetation_pars / water_pars where set, otherwise
+    from PALM's default for the surface type.
+    """
+    ny, nx = model.vegetation_type.shape
+    z0 = np.zeros((ny, nx), dtype=np.float32)
+    z0h = np.zeros((ny, nx), dtype=np.float32)
+    for type_id, (z0_type, z0h_type) in PALM_VEGETATION_ROUGHNESS.items():
+        cells = model.vegetation_type == type_id
+        z0[cells] = z0_type
+        z0h[cells] = z0h_type
+    for index, target in ((4, z0), (5, z0h)):
+        own = model.vegetation_pars[index] > model.FLOAT_FILL
+        target[own] = model.vegetation_pars[index][own]
+    pavement = model.pavement_type > model.INT_FILL
+    z0[pavement], z0h[pavement] = PALM_PAVEMENT_ROUGHNESS
+    water_types = (model.surface_config or {}).get("water", {}).get("types", {})
+    for type_id, cfg in water_types.items():
+        cells = model.water_type == int(type_id)
+        z0[cells] = cfg.get("z0_water", 0.0)
+        z0h[cells] = cfg.get("z0h_water", 0.0)
+    for index, target in ((1, z0), (2, z0h)):
+        own = (model.water_type > model.INT_FILL) & (model.water_pars[index] > model.FLOAT_FILL)
+        target[own] = model.water_pars[index][own]
+
+    z_mo = 0.5 * float(model.dz)
+    too_large = (z0 >= 0.5 * z_mo) | (z0h >= z_mo)
+    too_large &= ~_has_building(model)
+    z0_max = float(z0[too_large].max()) if too_large.any() else 0.0
+    return too_large, z0_max
 
 
 def clean_model(model):
@@ -205,6 +244,10 @@ def validate(model, georef=None, export_buildings_3d=True):
     removes it.
     vegetation_pars without vegetation: PALM ignores them (LSM0041),
     clean_model() removes them.
+    Roughness length too large for the grid: PALM stops with LSM0048 where
+    z0 >= dz/4 or z0h >= dz/2 (0.5 and 1 x the height of the first grid level
+    above the surface), unless allow_roughness_limitation = .T. in the
+    namelist. Forests (z0 = 2 m) need dz > 8 m without it.
     Bridge cells whose deck reaches down to the ground: the flow cannot pass
     under them (seen in palmgeo drivers, where the deck height is too low).
 
@@ -301,6 +344,17 @@ def validate(model, georef=None, export_buildings_3d=True):
             f"all {vegetation_pars_set.shape[0]} vegetation_pars (DRV0029)."
         )
         invalid_mask |= incomplete_vp_mask
+
+    # 4c. Roughness length against the grid (LSM0048 unless allow_roughness_limitation)
+    rough_mask, z0_max = roughness_too_large(model)
+    n_rough = int(np.count_nonzero(rough_mask))
+    if n_rough:
+        notes.append(
+            f"{n_rough} cells have a roughness length too large for dz = {model.dz:g} m "
+            f"(z0 up to {z0_max:g} m, limit {model.dz / 4:g} m). PALM stops (LSM0048) "
+            "unless allow_roughness_limitation = .T. in the namelist."
+        )
+        note_mask |= rough_mask
 
     # 5a. Vegetation / pavement cells need soil_type
     no_soil_mask = (has_veg | has_pav) & (model.soil_type <= INT_FILL)

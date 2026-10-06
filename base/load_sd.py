@@ -197,6 +197,8 @@ def LoadModel(filename="output.nc", surface_config=None):
             dz = float(res)
 
         model = GridModel(nx, ny, res, dz, surface_config=surface_config)
+        # Global attributes (source, author, licence, ...) go back into the file on save
+        model.file_attributes = {name: nc_file.getncattr(name) for name in nc_file.ncattrs()}
         model.vegetation_type[:, :] = veg
         model.soil_type[:, :] = soil
         model.pavement_type[:, :] = pav

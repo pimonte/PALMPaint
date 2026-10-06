@@ -113,3 +113,30 @@ def test_3d_variables_with_an_unexpected_shape_are_reported(tmp_path):
 
     # without lad, the 2D tree_id has no voxels to sit on and is reported too
     assert model.resolved_vegetation["unreadable_3d_variables"] == ["lad ('y', 'x')", "tree_id ('y', 'x')"]
+
+
+def test_global_attributes_survive_save_border_crop_and_undo(tmp_path):
+    # palmgeo and London drivers carry the attribution their data licenses
+    # require in the global attribute "source"
+    source = tmp_path / "with_attributes.nc"
+    save_and_load(make_model(), source)
+    with netCDF4.Dataset(source, "a") as nc_file:
+        nc_file.source = "OpenStreetMap contributors (ODbL), Copernicus Sentinel-2"
+        nc_file.title = "Hannover test"
+        nc_file.licence = "ODbL"
+        nc_file.origin_x = 1.0              # stale, the georeference wins on save
+    model, *_ = LoadModel(str(source), surface_config=surface_config.SURFACE_CONFIG)
+
+    from base.gridmodel import GridModel
+    for name, changed in (
+        ("save", model),
+        ("border and crop", model.padded(1, 2, 3, 4).cropped(3, 2, model.nx, model.ny)),
+        ("undo", GridModel.from_state(model.export_state())),
+    ):
+        saved = tmp_path / "saved.nc"
+        save_and_load(changed, saved)
+        with netCDF4.Dataset(saved) as nc_file:
+            assert nc_file.source == "OpenStreetMap contributors (ODbL), Copernicus Sentinel-2", name
+            assert nc_file.title == "Hannover test", name
+            assert nc_file.licence == "ODbL", name
+            assert nc_file.origin_x != 1.0, name
