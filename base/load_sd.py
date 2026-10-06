@@ -207,6 +207,7 @@ def LoadModel(filename="output.nc", surface_config=None):
         model.building_type[:, :] = bldg_type
         model.zt[:, :] = zt
         model.water_pars[:, :, :] = water_pars
+        model.fill_default_water_temperatures()
         # PALM needs exactly 12 vegetation parameters, other counts are reported below
         vegetation_pars_ok = vegetation_pars.shape == model.vegetation_pars.shape
         if vegetation_pars_ok:

@@ -52,7 +52,8 @@ print(f"RAM budget {_cli_args.ram:g} GB (--ram): arrays from "
       f"{array_store.disk_threshold_bytes() / 1024**2:.0f} MB are kept in files in tmp/.")
 
 # Parked brushes: untested, not part of a release. Shown only with --experimental.
-_EXPERIMENTAL_TOOLS = ("irrigation", "shf", "ssws") if _cli_args.experimental else ()
+_PARKED_LAYERS = ("irrigation", "shf", "ssws")
+_EXPERIMENTAL_TOOLS = _PARKED_LAYERS if _cli_args.experimental else ()
 if _cli_args.experimental:
     print("Experimental brushes enabled (--experimental): " + ", ".join(_EXPERIMENTAL_TOOLS))
 
@@ -480,10 +481,25 @@ class PaintApplication(framework.Framework):
         self._paste_angle = 0.0
         # Reset offsets to original so re-entering paste starts unrotated
         self._clipboard["offsets"] = list(self._clipboard["offsets_orig"])
+        self._show_paste_hint()
+
+    def _show_paste_hint(self):
+        """While pasting, the top bar says how to place, rotate and cancel."""
+        self.remove_options_from_top_bar()
+        tk.Label(
+            self.top_bar,
+            text=(f"Paste ({self._paste_angle:g} deg):  click: place  |  R: rotate 15 deg  |  "
+                  "Shift+R: rotate 1 deg  |  Esc: cancel"),
+        ).pack(side="left", padx=10)
+
+    def _leave_paste_hint(self):
+        self.remove_options_from_top_bar()
+        self.display_options_in_the_top_bar()
 
     def _cancel_paste_mode(self):
         self._paste_mode = False
         self.backend.show_hover_preview([])
+        self._leave_paste_hint()
 
     def _commit_paste(self, anchor_row, anchor_col):
         targets = self._paste_target_cells(anchor_row, anchor_col)
@@ -494,14 +510,16 @@ class PaintApplication(framework.Framework):
             self.model.set_pixel(tr, tc, quantize=False, **pixel)
         self.backend.update_grid(self.nx, self.ny, self.res)
         pasted_cells = {(tr, tc) for tr, tc, _ in targets}
-        self.set_selection(pasted_cells, anchor=(anchor_row, anchor_col), mode="replace")
         self._paste_mode = False
+        self.set_selection(pasted_cells, anchor=(anchor_row, anchor_col), mode="replace")
+        self._leave_paste_hint()
 
     def _on_r_key(self, event=None):
         if self._paste_mode:
             shift = event is not None and bool(event.state & 0x0001)
             delta = 1.0 if shift else 15.0
             self._rotate_clipboard(delta)
+            self._show_paste_hint()
             if self.hover_cell is not None:
                 preview = [(tr, tc) for tr, tc, _ in
                            self._paste_target_cells(*self.hover_cell)]
@@ -1013,9 +1031,9 @@ class PaintApplication(framework.Framework):
             label = "Irrigated" if self.selected_irrigation_flag == 1 else "Not irrigated"
             return f"Irrigation: {label}"
         if tool == "shf":
-            return f"SHF: {self.selected_shf_value:.4f} K m s⁻¹"
+            return f"SHF: {self.selected_shf_value:.4f} K m s-1"
         if tool == "ssws":
-            return f"SSWS: {self.selected_ssws_value:.4e} kg m⁻² s⁻¹"
+            return f"SSWS: {self.selected_ssws_value:.4e} kg m-2 s-1"
         return None   # tool does not produce a surface fill
 
     def _get_current_tool_pixel_data(self):
@@ -1645,7 +1663,48 @@ class PaintApplication(framework.Framework):
             return
         self._erase_tree_at(row, col)
 
+    def _bucket_fill_description(self):
+        """What Bucket Fill would put on the whole domain, or None if the tool has no fill."""
+        if self.active_view == "soil":
+            soil = self._format_type_label(self.selected_soil_type, self.get_soil_definition)
+            return f"soil type {soil} on every cell without water or a building"
+        if self.active_view != "landcover":
+            return None
+        tool = self.selected_tool_bar_function
+        if tool == "vegetation":
+            veg = self._format_type_label(self.selected_vegetation_type, self.get_vegetation_definition)
+            return f"vegetation {veg} on every cell without a building or trees"
+        if tool == "pavement":
+            pav = self._format_type_label(self.selected_pavement_type, self.get_pavement_definition)
+            return f"pavement {pav} on every cell without a building or trees"
+        if tool == "water":
+            water = self._format_type_label(self.selected_water_type, self.get_water_definition)
+            return f"water {water} on every cell without a building or trees"
+        if tool == "building":
+            return (f"a building (ID {self.building_id}, {self.building_height} m) on every cell, "
+                    "trees and existing buildings included")
+        if tool == "eraser":
+            return "nothing: every cell is erased"
+        return None
+
     def bucket_fill(self):
+        """Fill the whole domain with the current tool, after asking."""
+        description = self._bucket_fill_description()
+        if description is None:
+            messagebox.showinfo(
+                "Bucket Fill",
+                "Bucket Fill works in the landcover view with vegetation, pavement, water, "
+                "building or eraser, and in the soil view.",
+            )
+            return
+        if not messagebox.askyesno(
+            "Bucket Fill",
+            f"Fill the whole domain with {description}?\n\n"
+            "Locked layers are left out. Undo (Ctrl+Z) brings everything back.",
+            icon="warning",
+            default="no",
+        ):
+            return
         self.save_state()
         if self.active_view == "soil":
             for (row, col) in self.pixels.keys():
@@ -1862,15 +1921,15 @@ class PaintApplication(framework.Framework):
                     w = _parse_to_cells(w_var)
                     e = _parse_to_cells(e_var)
             except (ValueError, ZeroDivisionError):
-                preview_label.config(text="—")
+                preview_label.config(text="-")
                 return
             new_nx = self.nx + w + e
             new_ny = self.ny + n + s
             preview_label.config(
-                text=(f"Current: {self.nx} \u00d7 {self.ny} cells"
-                      f"  ({self.nx * res:.0f} \u00d7 {self.ny * res:.0f} m)\n"
-                      f"New:     {new_nx} \u00d7 {new_ny} cells"
-                      f"  ({new_nx * res:.0f} \u00d7 {new_ny * res:.0f} m)")
+                text=(f"Current: {self.nx} x {self.ny} cells"
+                      f"  ({self.nx * res:.0f} x {self.ny * res:.0f} m)\n"
+                      f"New:     {new_nx} x {new_ny} cells"
+                      f"  ({new_nx * res:.0f} x {new_ny * res:.0f} m)")
             )
 
         def on_unit_change(*_):
@@ -1912,7 +1971,7 @@ class PaintApplication(framework.Framework):
                 tk.messagebox.showerror("Invalid Input", "Enter numeric values.", parent=dialog)
                 return
             if any(v < 0 for v in (n, s, w, e)):
-                tk.messagebox.showerror("Invalid Input", "Values must be \u2265 0.", parent=dialog)
+                tk.messagebox.showerror("Invalid Input", "Values must be >= 0.", parent=dialog)
                 return
             if n == s == w == e == 0:
                 dialog.destroy()
@@ -1990,8 +2049,8 @@ class PaintApplication(framework.Framework):
         y0_var  = tk.StringVar(value="0")
         snx_var = tk.StringVar(value=str(nx))
         sny_var = tk.StringVar(value=str(ny))
-        for row_i, (lbl, var) in enumerate([("SW corner  x (W\u2192E):", x0_var),
-                                             ("SW corner  y (S\u2192N):", y0_var),
+        for row_i, (lbl, var) in enumerate([("SW corner  x (W to E):", x0_var),
+                                             ("SW corner  y (S to N):", y0_var),
                                              ("New width  nx:", snx_var),
                                              ("New height ny:", sny_var)]):
             tk.Label(os_frame, text=lbl).grid(row=row_i, column=0, sticky="e", padx=(8, 2), pady=2)
@@ -2003,10 +2062,10 @@ class PaintApplication(framework.Framework):
         ty0_var = tk.StringVar(value="0")
         tx1_var = tk.StringVar(value=str(nx - 1))
         ty1_var = tk.StringVar(value=str(ny - 1))
-        for row_i, (lbl, var) in enumerate([("SW corner  x0 (W\u2192E):", tx0_var),
-                                             ("SW corner  y0 (S\u2192N):", ty0_var),
-                                             ("NE corner  x1 (W\u2192E):", tx1_var),
-                                             ("NE corner  y1 (S\u2192N):", ty1_var)]):
+        for row_i, (lbl, var) in enumerate([("SW corner  x0 (W to E):", tx0_var),
+                                             ("SW corner  y0 (S to N):", ty0_var),
+                                             ("NE corner  x1 (W to E):", tx1_var),
+                                             ("NE corner  y1 (S to N):", ty1_var)]):
             tk.Label(tc_frame, text=lbl).grid(row=row_i, column=0, sticky="e", padx=(8, 2), pady=2)
             tk.Entry(tc_frame, textvariable=var, width=10).grid(row=row_i, column=1, padx=(2, 8), pady=2)
 
@@ -2042,13 +2101,13 @@ class PaintApplication(framework.Framework):
             try:
                 col_start, row_start, cnx, cny = _get_crop_cells()
             except (ValueError, ZeroDivisionError):
-                preview_label.config(text="—")
+                preview_label.config(text="-")
                 return
             preview_label.config(
-                text=(f"Current: {nx} \u00d7 {ny} cells"
-                      f"  ({nx * res:.0f} \u00d7 {ny * res:.0f} m)\n"
-                      f"New:     {cnx} \u00d7 {cny} cells"
-                      f"  ({cnx * res:.0f} \u00d7 {cny * res:.0f} m)")
+                text=(f"Current: {nx} x {ny} cells"
+                      f"  ({nx * res:.0f} x {ny * res:.0f} m)\n"
+                      f"New:     {cnx} x {cny} cells"
+                      f"  ({cnx * res:.0f} x {cny * res:.0f} m)")
             )
 
         def on_unit_change(*_):
@@ -2147,7 +2206,7 @@ class PaintApplication(framework.Framework):
                 tk.messagebox.showerror("Invalid Input", "Enter numeric values.", parent=dialog)
                 return
             if cnx < 1 or cny < 1:
-                tk.messagebox.showerror("Invalid Input", "New size must be at least 1 \u00d7 1.", parent=dialog)
+                tk.messagebox.showerror("Invalid Input", "New size must be at least 1 x 1.", parent=dialog)
                 return
             if col_start < 0 or row_start < 0:
                 tk.messagebox.showerror("Invalid Input", "Origin is outside the grid.", parent=dialog)
@@ -2216,7 +2275,7 @@ class PaintApplication(framework.Framework):
         if not result.get("notes"):
             return ""
         return "\n\nNotes:\n" + "\n".join(
-            f"\u2022 {n}" for n in result["notes"]
+            f"- {n}" for n in result["notes"]
         )
 
     def run_validation(self):
@@ -2229,9 +2288,9 @@ class PaintApplication(framework.Framework):
                 "No errors found. The project is consistent." + self._notes_text(result),
             )
         else:
-            lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
+            lines = "\n".join(f"- {v}" for v in result["violations"])
             messagebox.showwarning(
-                "Validation \u2014 issues found",
+                "Validation - issues found",
                 f"{len(result['violations'])} issue(s) detected:\n\n{lines}" + self._notes_text(result),
             )
 
@@ -2309,7 +2368,7 @@ class PaintApplication(framework.Framework):
         dialog.geometry(f"+{rx - 150}+{ry - 40}")
 
         tk.Label(dialog, text=label, padx=20, pady=10).pack()
-        bar = ttk.Progressbar(dialog, mode="indeterminate", length=280)
+        bar = ttk.Progressbar(dialog, mode="indeterminate", length=self.px(280))
         bar.pack(padx=20, pady=(0, 15))
         bar.start(12)
 
@@ -2344,7 +2403,7 @@ class PaintApplication(framework.Framework):
             return
 
         self.save_state()
-        applied = self._run_with_busy_dialog(f"Applying {title}…", apply_callback)
+        applied = self._run_with_busy_dialog(f"Applying {title}...", apply_callback)
         summary = applied["summary"]
         self.backend.update_grid(self.nx, self.ny, self.res)
         self.backend.redraw_tree_overlay()
@@ -2359,7 +2418,7 @@ class PaintApplication(framework.Framework):
     def run_filter_sweep_tool(self):
         """Preview and optionally apply PALM-style hole/cavity filtering."""
         preview = self._run_with_busy_dialog(
-            "Computing filter sweep preview…",
+            "Computing filter sweep preview...",
             self.model.preview_filter_sweep,
         )
         summary = preview["summary"]
@@ -2436,9 +2495,9 @@ class PaintApplication(framework.Framework):
         ):
             result = self._validate_model()
             if not result["valid"]:
-                lines = "\n".join(f"\u2022 {v}" for v in result["violations"])
+                lines = "\n".join(f"- {v}" for v in result["violations"])
                 proceed = messagebox.askokcancel(
-                    "Validation \u2014 issues found",
+                    "Validation - issues found",
                     f"{len(result['violations'])} issue(s) detected:\n\n{lines}"
                     + self._notes_text(result)
                     + "\n\nSave anyway?",
@@ -2538,20 +2597,19 @@ class PaintApplication(framework.Framework):
         """Open a small dialog to configure autosave interval and rotation size."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Autosave Settings")
-        dialog.geometry("360x220")
         dialog.resizable(False, False)
 
         tk.Label(
             dialog,
             text="Autosave writes rotating NetCDF snapshots in the project folder.",
-            wraplength=320,
+            wraplength=self.px(320),
             justify="left",
         ).pack(anchor="w", padx=12, pady=(12, 6))
 
         tk.Label(
             dialog,
             text=f"Folder: {os.getcwd()}",
-            wraplength=320,
+            wraplength=self.px(320),
             justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -2571,7 +2629,7 @@ class PaintApplication(framework.Framework):
         tk.Label(
             dialog,
             text="Set files to 0 to disable autosave. Larger values use more disk space.",
-            wraplength=320,
+            wraplength=self.px(320),
             justify="left",
             fg="gray",
         ).pack(anchor="w", padx=12, pady=(8, 10))
@@ -2821,6 +2879,22 @@ class PaintApplication(framework.Framework):
             self.res = computed_res
 
     
+    def _menu_by_label(self, label):
+        """The pull-down menu of the menu bar with this label, found by name, not position."""
+        for index in range(self.menubar.index("end") + 1):
+            if self.menubar.type(index) == "cascade" and self.menubar.entrycget(index, "label").strip() == label:
+                return self.root.nametowidget(self.menubar.entrycget(index, "menu"))
+        raise KeyError(f"no menu {label!r} in the menu bar")
+
+    def px(self, pixels):
+        """A size given in pixels for a normal 96 dpi screen, scaled to this screen.
+
+        Tk 9 reads the desktop scaling (e.g. 200 %) and draws text larger, so
+        sizes in plain pixels must grow with it or the text is cut off.
+        """
+        scale = float(self.root.tk.call("tk", "scaling")) / (96 / 72)
+        return int(round(pixels * max(scale, 1.0)))
+
     def _report_callback_exception(self, exc_type, exc_value, exc_tb):
         """Errors in Tk callbacks: a dialog for a full disk, otherwise the traceback as before."""
         if isinstance(exc_value, array_store.NotEnoughDiskSpace):
@@ -3164,7 +3238,7 @@ class PaintApplication(framework.Framework):
     
     def create_cell_info_label(self):
         """Create a fixed-width sidebar area that shows properties of the hovered cell."""
-        self.cell_info_frame = tk.Frame(self.tool_bar, width=220, height=140)
+        self.cell_info_frame = tk.Frame(self.tool_bar, width=self.px(220), height=self.px(140))
         self.cell_info_frame.grid(
             row=22, column=1, columnspan=2,
             pady=5, padx=1, sticky="nw"
@@ -3177,7 +3251,7 @@ class PaintApplication(framework.Framework):
             justify="left",
             anchor="nw",
             width=28,          # Breite in Textzeichen
-            wraplength=200,    # Umbruch in Pixeln
+            wraplength=self.px(200),
         )
         self.cell_info_label.pack(fill="both", expand=True)
 
@@ -3311,11 +3385,11 @@ class PaintApplication(framework.Framework):
 
         shf_val = float(pixel.get("shf", self.model.FLOAT_FILL))
         if shf_val > self.model.FLOAT_FILL:
-            lines.append(f"shf: {shf_val:.4f} K m s⁻¹")
+            lines.append(f"shf: {shf_val:.4f} K m s-1")
 
         ssws_val = float(pixel.get("ssws", self.model.FLOAT_FILL))
         if ssws_val > self.model.FLOAT_FILL:
-            lines.append(f"ssws: {ssws_val:.4e} kg m⁻² s⁻¹")
+            lines.append(f"ssws: {ssws_val:.4e} kg m-2 s-1")
 
         # Tree / resolved-vegetation info
         tree_info = self.model.get_tree_info_at(row, col)
@@ -3325,14 +3399,14 @@ class PaintApplication(framework.Framework):
             lines.append("Tree")
             lines.append("----")
             lines.append(f"tree height: {max_z:.1f} m" if max_z is not None else "tree height: -")
-            lines.append(f"col LAD max: {tree_info['lad_max']:.4f} m²/m³")
-            lines.append(f"col. LAI: {tree_info['lad_integral']:.4f} m²/m²")
+            lines.append(f"col LAD max: {tree_info['lad_max']:.4f} m2/m3")
+            lines.append(f"col. LAI: {tree_info['lad_integral']:.4f} m2/m2")
             bad_max = tree_info["bad_max"]
             bad_integral = tree_info["bad_integral"]
-            lines.append(f"col. BAD max: {bad_max:.4f} m²/m³" if bad_max is not None else "bad max: -")
+            lines.append(f"col. BAD max: {bad_max:.4f} m2/m3" if bad_max is not None else "bad max: -")
             lines.append(
-                f"col. BAD: {bad_integral:.4f} m²/m²"
-                if bad_integral is not None else "cell ∫ BAI: -"
+                f"col. BAD: {bad_integral:.4f} m2/m2"
+                if bad_integral is not None else "cell integral BAI: -"
             )
             tid = tree_info["tree_id"]
             lines.append(f"tree id: {tid}" if tid > 0 else "tree id: -")
@@ -3447,6 +3521,13 @@ class PaintApplication(framework.Framework):
             self._crop_draw_start = (row, col)
             return
 
+        # Heightmap and soil views have their own brush tools. The landcover
+        # tool (select, shape modes, tree) must not take over their clicks.
+        if self.active_view != "landcover":
+            self.save_state()
+            self.execute_selected_method()
+            return
+
         if self.selected_tool_bar_function == "select":
             if not (0 <= row < self.ny and 0 <= col < self.nx):
                 return
@@ -3484,6 +3565,10 @@ class PaintApplication(framework.Framework):
                 self.backend.show_hover_preview(cells)
             return
 
+        if self.active_view != "landcover":
+            self.execute_selected_method()
+            return
+
         if self.selected_tool_bar_function == "select":
             if self._select_rect_start is not None:
                 r1, c1 = self._select_rect_start
@@ -3512,6 +3597,9 @@ class PaintApplication(framework.Framework):
                     cb = self._crop_draw_callback
                     self._crop_draw_callback = None
                     cb(r1, c1, row, col)
+            return
+
+        if self.active_view != "landcover":
             return
 
         if self.selected_tool_bar_function == "select" and self._select_rect_start is not None:
@@ -3691,7 +3779,7 @@ class PaintApplication(framework.Framework):
         )
         self.build_menu(menu_definitions)
         self.menubar = self.root.nametowidget(self.root["menu"])
-        view_menu = self.root.nametowidget(self.menubar.entrycget(1, "menu"))
+        view_menu = self._menu_by_label("View")
         self._layer_visibility_vars = {}
         self._layer_lock_vars = {}
         self._height_background_var = tk.BooleanVar(
@@ -3702,6 +3790,9 @@ class PaintApplication(framework.Framework):
         )
         view_menu.add_separator()
         for layer_name in LAYER_KEYS:
+            # Layers of the parked brushes only appear with --experimental
+            if layer_name in _PARKED_LAYERS and layer_name not in _EXPERIMENTAL_TOOLS:
+                continue
             label = "Buildings" if layer_name == "building" else layer_name.capitalize()
             visibility_var = tk.BooleanVar(value=self.editor_state.is_layer_visible(layer_name))
             lock_var = tk.BooleanVar(value=self.editor_state.is_layer_locked(layer_name))
@@ -3728,7 +3819,7 @@ class PaintApplication(framework.Framework):
             variable=self._soil_background_var,
             command=self._on_soil_background_toggle,
         )
-        extras_menu = self.root.nametowidget(self.menubar.entrycget(self.menubar.index("end"), "menu"))
+        extras_menu = self._menu_by_label("Extras")
         self._export_buildings_3d_var = tk.BooleanVar(value=self.export_buildings_3d)
         extras_menu.add_separator()
         extras_menu.add_checkbutton(
@@ -3792,6 +3883,7 @@ class PaintApplication(framework.Framework):
         self.root.bind("<Control-x>", lambda e: self._copy_selection(cut=True))
         self.root.bind("<Control-v>", lambda e: self._enter_paste_mode())
         self.root.bind("<r>", self._on_r_key)
+        self.root.bind("<R>", self._on_r_key)       # Shift+R: rotate by 1 degree
         self.root.bind("<Escape>", self._on_escape_key)
 
     def toggle_tree_overlay(self, event=None):
@@ -4113,7 +4205,7 @@ class PaintApplication(framework.Framework):
 
     def shf_options(self):
         """Display SHF value entry in the top bar (K m s⁻¹ or W m⁻²)."""
-        tk.Label(self.top_bar, text="SHF (K m s⁻¹):").pack(side="left", padx=5)
+        tk.Label(self.top_bar, text="SHF (K m s-1):").pack(side="left", padx=5)
         self.shf_value_var = tk.StringVar(value=str(self.selected_shf_value))
         entry = tk.Entry(self.top_bar, textvariable=self.shf_value_var, width=10)
         entry.pack(side="left", padx=5)
@@ -4124,7 +4216,7 @@ class PaintApplication(framework.Framework):
 
     def ssws_options(self):
         """Display SSWS value entry in the top bar (kg m⁻² s⁻¹)."""
-        tk.Label(self.top_bar, text="SSWS (kg m⁻² s⁻¹):").pack(side="left", padx=5)
+        tk.Label(self.top_bar, text="SSWS (kg m-2 s-1):").pack(side="left", padx=5)
         self.ssws_value_var = tk.StringVar(value=str(self.selected_ssws_value))
         entry = tk.Entry(self.top_bar, textvariable=self.ssws_value_var, width=10)
         entry.pack(side="left", padx=5)
@@ -4311,6 +4403,10 @@ class PaintApplication(framework.Framework):
                 text="Click: select  |  Shift: add cell  |  Ctrl: flood-fill  |  Ctrl+Shift: toggle  |  Ctrl+C: copy  |  Ctrl+X: cut  |  Ctrl+V: paste",
             ).pack(side="left", padx=10)
             return
+        tk.Label(
+            self.top_bar,
+            text="Ctrl+C: copy  |  Ctrl+X: cut  |  Ctrl+V: paste, then R rotates",
+        ).pack(side="right", padx=10)
 
         common = summary["common"]
         self._selection_zt_var = tk.StringVar(
@@ -4478,7 +4574,7 @@ class PaintApplication(framework.Framework):
 
         legend_row = tk.Frame(self.height_legend_frame)
         legend_row.pack(anchor="w")
-        self.height_legend_canvas = tk.Canvas(legend_row, width=20, height=130, highlightthickness=1)
+        self.height_legend_canvas = tk.Canvas(legend_row, width=self.px(20), height=self.px(130), highlightthickness=1)
         self.height_legend_canvas.pack(side="left")
         label_col = tk.Frame(legend_row)
         label_col.pack(side="left", padx=6)
@@ -4495,8 +4591,8 @@ class PaintApplication(framework.Framework):
             return
 
         self.height_legend_canvas.delete("all")
-        h = 130
-        w = 20
+        h = self.px(130)
+        w = self.px(20)
         levels = max(1, int(self.height_view_levels))
         palette = self.model._terrain_palette(levels)
         block_h = max(1, h // levels)
@@ -4542,7 +4638,6 @@ class PaintApplication(framework.Framework):
         """Edit origin coordinates using the dedicated georeference module."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Change Origin")
-        dialog.geometry("430x420")
         dialog.resizable(False, False)
 
         status_var = tk.StringVar(value=f"{self.georef.epsg_string} - {self.georef.crs_name}")
@@ -4711,7 +4806,7 @@ class PaintApplication(framework.Framework):
         lower_left_var.trace_add("write", lambda *_args: apply_ui_origin_preview())
         epsg_var.trace_add("write", lambda *_args: update_mode_ui())
 
-        tk.Label(frame, textvariable=mode_var, justify="left", fg="darkred", wraplength=380).grid(
+        tk.Label(frame, textvariable=mode_var, justify="left", fg="darkred", wraplength=self.px(380)).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
         )
         row += 1
@@ -4787,8 +4882,8 @@ class PaintApplication(framework.Framework):
 
                 tk.messagebox.showinfo(
                     "Origin Updated",
-                    f"New Origin Set:\nLatitude: {georef.origin_lat:.7f}°N\n"
-                    f"Longitude: {georef.origin_lon:.7f}°E\n"
+                    f"New Origin Set:\nLatitude: {georef.origin_lat:.7f} deg N\n"
+                    f"Longitude: {georef.origin_lon:.7f} deg E\n"
                     f"Projected X: {georef.origin_x:.2f} m\n"
                     f"Projected Y: {georef.origin_y:.2f} m\n"
                     f"Origin z: {georef.origin_z:.2f} m\n"

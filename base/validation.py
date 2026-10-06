@@ -405,7 +405,7 @@ def validate(model, georef=None, export_buildings_3d=True):
     n_nonpositive = int(np.count_nonzero(explicit_invalid_bld_id_mask))
     if n_nonpositive:
         violations.append(
-            f"{n_nonpositive} cell(s) have a building_id ≤ 0. "
+            f"{n_nonpositive} cell(s) have a building_id <= 0. "
             "Building IDs must be positive integers."
         )
         invalid_mask |= explicit_invalid_bld_id_mask

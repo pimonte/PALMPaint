@@ -691,6 +691,21 @@ class GridModel:
         """Reset all water parameters for one pixel."""
         self.water_pars[:, row, col] = self.FLOAT_FILL
 
+    def fill_default_water_temperatures(self):
+        """Give water cells without their own temperature the default of their type.
+
+        PALM uses the water type's default when water_pars is not set, and
+        SaveModel only writes temperatures that differ from it. After loading,
+        such cells look like freshly painted water (cell info, Select By).
+        """
+        if self.surface_config is None:
+            return
+        no_temperature = self.water_pars[0] <= self.FLOAT_FILL
+        for type_id, cfg in self.surface_config.get("water", {}).get("types", {}).items():
+            default = cfg.get("water_temperature")
+            if default is not None:
+                self.water_pars[0][no_temperature & (self.water_type == int(type_id))] = float(default)
+
     def clear_vegetation_parameters(self, row, col):
         """Reset all vegetation parameters for one pixel."""
         self.vegetation_pars[:, row, col] = self.FLOAT_FILL

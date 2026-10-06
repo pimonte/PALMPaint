@@ -185,6 +185,17 @@ def test_save_without_surface_config_keeps_all_layers(model, tmp_path):
     assert_same_layers(model, loaded)
 
 
+def test_default_water_temperature_is_back_after_load(model, tmp_path):
+    # SaveModel writes only temperatures that differ from the water type's
+    # default, loading gives the cell its default again (283 K, as in PALM).
+    r, c = 3, 3
+    model.set_pixel(r, c, vegetation_type=INT_FILL, soil_type=INT_FILL, water_type=1)
+    model.water_pars[0, r, c] = 283.0
+    loaded = save_and_load(model, tmp_path / "driver.nc")
+    assert loaded.water_pars[0, r, c] == 283.0
+    assert_same_layers(model, loaded)
+
+
 def test_pad_then_crop_keeps_all_layers(model):
     padded = model.padded(n_north=2, n_south=1, n_west=3, n_east=0)
     cropped = padded.cropped(col_start=3, row_start=1, new_nx=model.nx, new_ny=model.ny)

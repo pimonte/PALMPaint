@@ -163,7 +163,7 @@ class TreeGeneratorDialog(tk.Toplevel):
         r = 0
 
         # Geometry
-        ttk.Label(parent, text="─── Geometry ───", foreground="#555").grid(
+        ttk.Label(parent, text="--- Geometry ---", foreground="#555").grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(0, 2))
         r += 1
 
@@ -181,7 +181,7 @@ class TreeGeneratorDialog(tk.Toplevel):
         self._row(parent, r, "Crown shape:", shape_cb); r += 1
 
         # LAD model
-        ttk.Label(parent, text="─── LAD Model ───", foreground="#555").grid(
+        ttk.Label(parent, text="--- LAD Model ---", foreground="#555").grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(6, 2))
         r += 1
 
@@ -196,16 +196,16 @@ class TreeGeneratorDialog(tk.Toplevel):
                                         state="readonly", width=24)
         self._row(parent, r, "Profil-Modus:", self._profile_cb); r += 1
         self._alpha_sb = self._spinbox(parent, self._v_alpha, 0.1, 20.0, 0.1)
-        self._row(parent, r, "Alpha (β profile):", self._alpha_sb); r += 1
+        self._row(parent, r, "Alpha (beta profile):", self._alpha_sb); r += 1
         self._beta_sb = self._spinbox(parent, self._v_beta, 0.1, 20.0, 0.1)
-        self._row(parent, r, "Beta (β profile):", self._beta_sb); r += 1
+        self._row(parent, r, "Beta (beta profile):", self._beta_sb); r += 1
 
         # Palm extinction k (only meaningful for palm_extinction)
         self._ext_k_sb = self._spinbox(parent, self._v_ext_k, 0.1, 20.0, 0.1)
         self._row(parent, r, "Extinction k:", self._ext_k_sb); r += 1
 
         # Scaling
-        ttk.Label(parent, text="─── Scaling ───", foreground="#555").grid(
+        ttk.Label(parent, text="--- Scaling ---", foreground="#555").grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(6, 2))
         r += 1
 
@@ -217,13 +217,13 @@ class TreeGeneratorDialog(tk.Toplevel):
                         command=self._on_lailad_toggle).pack(side="left", padx=(8, 0))
 
         self._lai_sb = self._spinbox(parent, self._v_lai, 0.1, 100.0, 0.1)
-        self._row(parent, r, "LAI (m²/m²):", self._lai_sb); r += 1
+        self._row(parent, r, "LAI (m2/m2):", self._lai_sb); r += 1
 
         self._ladmax_sb = self._spinbox(parent, self._v_lad_max, 0.01, 50.0, 0.01)
-        self._row(parent, r, "LAD_max (m²/m³):", self._ladmax_sb); r += 1
+        self._row(parent, r, "LAD_max (m2/m3):", self._ladmax_sb); r += 1
 
         # BAD
-        ttk.Label(parent, text="─── BAD ───", foreground="#555").grid(
+        ttk.Label(parent, text="--- BAD ---", foreground="#555").grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(6, 2))
         r += 1
         self._row(parent, r, "BAD/LAD ratio:",
@@ -375,6 +375,7 @@ class TreeGeneratorDialog(tk.Toplevel):
             return
 
         import numpy as np
+        import matplotlib
         import matplotlib.cm as mcm
         import matplotlib.colors as mcolors
 
@@ -387,7 +388,8 @@ class TreeGeneratorDialog(tk.Toplevel):
         lad_max = result["scaling"]["lad_max"]
         vmin, vmax = 0.0, max(float(lad_max), 1e-9)
 
-        cmap = mcm.get_cmap("YlGn").copy()
+        # matplotlib.cm.get_cmap() was removed in matplotlib 3.9
+        cmap = matplotlib.colormaps["YlGn"].copy()
         cmap.set_bad(color="white")   # masked (zero) cells → white
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
@@ -472,7 +474,7 @@ class TreeGeneratorDialog(tk.Toplevel):
         # Use np.linspace across the crown cell range to guarantee distinct indices
         crown_iz = np.round(np.linspace(iz_base, iz_top, 3)).astype(int)
         crown_iz = np.clip(crown_iz, 0, nz - 1)
-        for pi, (frac_label, iz) in enumerate(zip(["1/3 crown", "½ crown", "2/3 crown"], crown_iz)):
+        for pi, (frac_label, iz) in enumerate(zip(["1/3 crown", "1/2 crown", "2/3 crown"], crown_iz)):
             img = lad[iz, :, :]
             self._axes[3 + pi].imshow(_masked(img), origin="lower", aspect="equal",
                                        cmap=cmap, norm=norm, interpolation="nearest", extent=ext_xy)
@@ -490,15 +492,15 @@ class TreeGeneratorDialog(tk.Toplevel):
         self._ax_profile.plot(lad_area,  z, color="#2ca02c", lw=1.5, label="Avg. area")
         self._ax_profile.plot(lad_max_z, z, color="#98df8a", lw=1.0, ls="--", label="Cell max")
         self._ax_profile.axhline(cb, color="gray", lw=0.8, ls=":", alpha=0.7,
-                                  label=f"Crown  {cb:.1f}–{ct:.1f} m")
+                                  label=f"Crown  {cb:.1f}-{ct:.1f} m")
         self._ax_profile.axhline(ct, color="gray", lw=0.8, ls=":", alpha=0.7)
         self._ax_profile.set_ylim(z_lim)
-        self._ax_profile.set_xlabel("LAD (m²/m³)", fontsize=6)
+        self._ax_profile.set_xlabel("LAD (m2/m3)", fontsize=6)
         self._ax_profile.set_ylabel("z (m)", fontsize=6)
         lai_val    = result["scaling"]["lai"]
         ladmax_val = result["scaling"]["lad_max"]
         self._ax_profile.set_title(
-            f"LAD-Profil\nLAI={lai_val:.2f} m²/m²  |  LAD_max={ladmax_val:.2f} m²/m³",
+            f"LAD-Profil\nLAI={lai_val:.2f} m2/m2  |  LAD_max={ladmax_val:.2f} m2/m3",
             fontsize=6, loc="left",
         )
         self._ax_profile.tick_params(labelsize=9)
@@ -509,10 +511,10 @@ class TreeGeneratorDialog(tk.Toplevel):
         sm.set_array([])
         self._colorbar = self._fig.colorbar(
             sm, ax=self._axes, shrink=0.7, pad=0.02,
-            label="LAD (m² m⁻³)", aspect=30,
+            label="LAD (m2 m-3)", aspect=30,
         )
         self._colorbar.ax.tick_params(labelsize=9)
-        self._colorbar.set_label("LAD (m² m⁻³)", fontsize=9)
+        self._colorbar.set_label("LAD (m2 m-3)", fontsize=9)
 
         self._canvas.draw()
 

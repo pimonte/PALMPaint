@@ -29,14 +29,14 @@ from base.gridmodel import GridModel
 
 
 _PLOT_TYPES = [
-    "XY – simplified landcover",
-    "XY – pavement types",
-    "XY – vegetation types",
-    "XY – LAD (column max)",
-    "XY – terrain height (zt)",
-    "XY – soil types",
-    "XY – building types",
-    "XY – building heights",
+    "XY - simplified landcover",
+    "XY - pavement types",
+    "XY - vegetation types",
+    "XY - LAD (column max)",
+    "XY - terrain height (zt)",
+    "XY - soil types",
+    "XY - building types",
+    "XY - building heights",
     "Cross-section",
     "Building height histogram",
     "LAD vertical profile",
@@ -224,7 +224,7 @@ class SDPlotDialog(tk.Toplevel):
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=4)
         ttk.Button(parent, text="Refresh", command=self._refresh).pack(anchor="w")
-        ttk.Button(parent, text="Export…", command=self._export).pack(anchor="w")
+        ttk.Button(parent, text="Export...", command=self._export).pack(anchor="w")
 
         self._update_option_panels()
 
@@ -267,7 +267,7 @@ class SDPlotDialog(tk.Toplevel):
             self._section_frame.pack(fill="x", pady=(0, 4))
         else:
             self._section_frame.pack_forget()
-        if sel == "XY – vegetation types":
+        if sel == "XY - vegetation types":
             self._veg_option_frame.pack(fill="x", pady=(0, 4))
         else:
             self._veg_option_frame.pack_forget()
@@ -289,14 +289,14 @@ class SDPlotDialog(tk.Toplevel):
         self._fig.clear()
         ax = self._fig.add_subplot(111)
         dispatch = {
-            "XY – simplified landcover": self._plot_xy_simplified,
-            "XY – pavement types": self._plot_xy_pavement,
-            "XY – vegetation types": self._plot_xy_vegetation,
-            "XY – LAD (column max)": self._plot_xy_lad,
-            "XY – terrain height (zt)": self._plot_xy_zt,
-            "XY – soil types": self._plot_xy_soil,
-            "XY – building types": self._plot_xy_building_types,
-            "XY – building heights": self._plot_xy_building_heights,
+            "XY - simplified landcover": self._plot_xy_simplified,
+            "XY - pavement types": self._plot_xy_pavement,
+            "XY - vegetation types": self._plot_xy_vegetation,
+            "XY - LAD (column max)": self._plot_xy_lad,
+            "XY - terrain height (zt)": self._plot_xy_zt,
+            "XY - soil types": self._plot_xy_soil,
+            "XY - building types": self._plot_xy_building_types,
+            "XY - building heights": self._plot_xy_building_heights,
             "Cross-section": self._plot_cross_section,
             "Building height histogram": self._plot_building_histogram,
             "LAD vertical profile": self._plot_lad_profile,
@@ -586,8 +586,8 @@ class SDPlotDialog(tk.Toplevel):
             col_max, origin="lower", cmap="viridis",
             extent=self._xy_extent(), aspect="equal", interpolation="nearest",
         )
-        self._fig.colorbar(im, ax=ax, label="LAD max (m² m⁻³)")
-        ax.set_title("LAD – column maximum")
+        self._fig.colorbar(im, ax=ax, label="LAD max (m2 m-3)")
+        ax.set_title("LAD - column maximum")
         ax.set_xlabel(self._axis_label_x())
         ax.set_ylabel(self._axis_label_y())
 
@@ -645,13 +645,13 @@ class SDPlotDialog(tk.Toplevel):
         if axis == "N-S":
             n_horiz = m.ny
             horiz = self._horiz_coords(n_horiz, axis="y")
-            horiz_lbl = "y – S→N"
-            title = f"Cross-section N–S (x col {used_idx})"
+            horiz_lbl = "y - S to N"
+            title = f"Cross-section N-S (x col {used_idx})"
         else:
             n_horiz = m.nx
             horiz = self._horiz_coords(n_horiz, axis="x")
-            horiz_lbl = "x – W→E"
-            title = f"Cross-section W–E (y row {used_idx})"
+            horiz_lbl = "x - W to E"
+            title = f"Cross-section W-E (y row {used_idx})"
 
         dz = m.dz
 
@@ -700,7 +700,7 @@ class SDPlotDialog(tk.Toplevel):
                 aspect="auto", interpolation="nearest",
                 alpha=0.85,
             )
-            self._fig.colorbar(im, ax=ax, label="LAD (m² m⁻³)", shrink=0.6)
+            self._fig.colorbar(im, ax=ax, label="LAD (m2 m-3)", shrink=0.6)
 
         ax.set_title(title)
         ax.set_xlabel(horiz_lbl + (" (gridboxes)" if u == "Gridboxes" else " (m)"))
@@ -740,7 +740,7 @@ class SDPlotDialog(tk.Toplevel):
         dz_disp = (z[-1] - z[-2]) * 0.8 if len(z) > 1 else 0.8
         ax.barh(z, lad_mean, height=dz_disp,
                 color="forestgreen", edgecolor="white", linewidth=0.3)
-        ax.set_xlabel("LAD – mean over vegetated cells (m² m⁻³)")
+        ax.set_xlabel("LAD - mean over vegetated cells (m2 m-3)")
         ax.set_ylabel(self._z_label())
         ax.set_title("LAD vertical profile")
 

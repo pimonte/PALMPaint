@@ -40,14 +40,15 @@ class Framework():
         self.root = root
 
     def build_menu(self, menu_definitions):
-        menu_bar = tk.Menu(self.root)
+        # No tear-off entry: Tk 8.6 adds one at position 0 by default, Tk 9 does not
+        menu_bar = tk.Menu(self.root, tearoff=0)
         for definition in menu_definitions:
             menu = tk.Menu(menu_bar, tearoff=0)
             top_level_menu, pull_down_menus = definition.split('-')
             menu_items = map(str.strip, pull_down_menus.split(','))
             for item in menu_items:
                 self._add_menu_command(menu, item)
-            menu_bar.add_cascade(label=top_level_menu, menu=menu)
+            menu_bar.add_cascade(label=top_level_menu.strip(), menu=menu)
         self.root.config(menu=menu_bar)
 
     def _add_menu_command(self, menu, item):

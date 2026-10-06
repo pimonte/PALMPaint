@@ -98,8 +98,8 @@ def generate_report(root, pixels, nx, ny, dxy, dz, ori, resolved_vegetation=None
         else:
             unique_ids = set()
 
-        tree_data["Canopy cover (m\u00b2)"] = format_value(canopy_cover_m2)
-        tree_data["Total leaf area (m\u00b2)"] = format_value(total_leaf_area)
+        tree_data["Canopy cover (m2)"] = format_value(canopy_cover_m2)
+        tree_data["Total leaf area (m2)"] = format_value(total_leaf_area)
         tree_data["Unique tree IDs"] = format_value(len(unique_ids))
 
         # BAD
@@ -107,7 +107,7 @@ def generate_report(root, pixels, nx, ny, dxy, dz, ori, resolved_vegetation=None
             valid_bad = bad_vol[bad_vol > 0]
             if valid_bad.size > 0:
                 total_ba = float(valid_bad.sum()) * dz * cell_area
-                tree_data["Total branch area (m\u00b2)"] = format_value(total_ba)
+                tree_data["Total branch area (m2)"] = format_value(total_ba)
 
         # Per-column max tree height from lad volume (works for all trees, incl. loaded)
         if zlad is not None and canopy_cells > 0:

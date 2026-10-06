@@ -459,7 +459,7 @@ def _run_plotter(snap: dict) -> None:
     bridge_mesh = _build_bridge_mesh(snap)
     lad_mesh = _build_lad_mesh(snap)
 
-    p = pv.Plotter(title='PALMPaint \u2014 3D View')
+    p = pv.Plotter(title='PALMPaint - 3D View')
     p.background_color = '#87CEEB'
 
     # Back-face culling: the GPU skips faces turned away from the camera. All
